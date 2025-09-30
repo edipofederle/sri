@@ -1,10 +1,79 @@
-# sri
+# Sri - Ruby Interpreter
 
-A Clojure library designed to ... well, that part is up to you.
+A Ruby interpreter implemented in Clojure with support for GraalVM native image compilation.
+
+## Features
+
+- **Tokenizer**: Lexical analysis of Ruby source code
+- **Parser**: Builds Abstract Syntax Trees (AST) from tokens
+- **Interpreter**: Direct AST interpretation without bytecode generation
+- **GraalVM Support**: Compiles to native binaries for fast startup
+- **Ruby Syntax**: Support for method definitions, method calls, variables, and basic control flow
+
+## Building
+
+### Prerequisites
+- Leiningen
+- Java 11+
+- GraalVM (optional but recommended, for native image compilation)
+
+### Build JAR
+```bash
+lein uberjar
+```
+
+### Build Native Image (requires GraalVM)
+```bash
+./build-native.sh
+```
 
 ## Usage
 
-FIXME
+### Running with Java
+```bash
+java -jar target/uberjar/sri-0.1.0-SNAPSHOT-standalone.jar <ruby-file>
+```
+
+### Running with Native Binary (if built)
+```bash
+./target/sri <ruby-file>
+```
+
+### Running with Leiningen
+```bash
+lein run <ruby-file>
+```
+
+## Examples
+
+The `examples/` directory contains various Ruby programs to test the interpreter:
+
+```bash
+# Run a simple method example
+lein run examples/working_methods.rb
+
+# Run arithmetic operations
+lein run examples/arithmetic.rb
+
+# Run class definitions
+lein run examples/class_basic.rb
+```
+
+## Testing
+
+Run the test suite:
+```bash
+lein test
+```
+
+## Development
+
+### Project Structure
+- `src/sri/core.clj` - Main entry point
+- `src/sri/tokenizer.cljc` - Lexical analyzer
+- `src/sri/parser.cljc` - AST parser
+- `src/sri/interpreter.cljc` - AST interpreter
+- `examples/` - Ruby test programs
 
 ## License
 
