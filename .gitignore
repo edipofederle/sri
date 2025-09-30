@@ -1,0 +1,40 @@
+# Leiningen/Clojure
+/target
+/classes
+/checkouts
+profiles.clj
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+/.lein-*
+/.nrepl-port
+/.prepl-port
+.cpcache/
+
+# Native image build artifacts
+*.so
+*.dylib
+*.dll
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+debug_test.ruj
+test.sri
+
+# Logs
+*.log
+
+# Mercurial (existing)
+.hgignore
+.hg/
