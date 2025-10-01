@@ -1,11 +1,11 @@
 # Demonstrates symbol literal support and methods
 
 
-# expected-output: :hello
-# expected-output: :world
-# expected-output: :ruby_symbol
-# expected-output: :test
-# expected-output: :example
+# expected-output: hello
+# expected-output: world
+# expected-output: ruby_symbol
+# expected-output: test
+# expected-output: example
 # expected-output: foo
 # expected-output: hello_world
 # expected-output: bar
@@ -20,18 +20,18 @@
 # expected-output: 15
 # expected-output: 15
 # expected-output: id2name_example
-# expected-output: :first
-# expected-output: :second
-# expected-output: :symbol_with_underscores
-# expected-output: :symbol123
-# expected-output: :_private_symbol
+# expected-output: first
+# expected-output: second
+# expected-output: symbol_with_underscores
+# expected-output: symbol123
+# expected-output: _private_symbol
 # expected-output: chainable
 # expected-output: hello
-# expected-output: :hello
+# expected-output: hello
 # expected-output: hello
 # expected-output: puts
-# expected-output: :pending
-# expected-output: :completed
+# expected-output: pending
+# expected-output: completed
 # expected-output: :database_url
 # expected-output: Symbol: :demonstration
 # expected-output: String: demonstration

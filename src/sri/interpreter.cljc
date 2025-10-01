@@ -540,11 +540,18 @@
                        ;; Print hash in Ruby format
                        (println (format-ruby-hash @(:data arg)))
 
+                       (keyword? arg)
+                       ;; Print symbols without colon prefix (Ruby behavior)
+                       (println (name arg))
+
                        :else
                        (println arg))))
                  nil)
         "print" (do
-                  (print (first args))
+                  (let [arg (first args)]
+                    (if (keyword? arg)
+                      (print (name arg))
+                      (print arg)))
                   (flush)
                   nil)
         "p" (do

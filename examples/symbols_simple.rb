@@ -1,17 +1,17 @@
  # Simple Symbol Examples with Expected Output
 
 # expected-output: === Basic Symbol Literals ===
-# expected-output: :hello
-# expected-output: :world
+# expected-output: hello
+# expected-output: world
 # expected-output: === Symbol Assignment ===
-# expected-output: :test
+# expected-output: test
 # expected-output: === Symbol Methods ===
 # expected-output: foo
 # expected-output: :bar
 # expected-output: 5
 # expected-output: === Symbol vs String ===
 # expected-output: hello
-# expected-output: :hello
+# expected-output: hello
 # expected-output: hello
 
 puts("=== Basic Symbol Literals ===")
