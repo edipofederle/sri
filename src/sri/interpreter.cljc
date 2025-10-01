@@ -137,12 +137,10 @@
 (defn interpret-indexed-assignment
   "Interpret indexed assignment like arr[0] = value or hash[key] = value."
   [ast entity-id variables]
-  (let [receiver-name (parser/get-component ast entity-id :array)
-        index-id (parser/get-component ast entity-id :index)
-        value-id (parser/get-component ast entity-id :value)
-        index-val (interpret-expression ast index-id variables)
-        new-value (interpret-expression ast value-id variables)]
-    (when-let [current-receiver (get @variables receiver-name)]
+  (let [{:keys [array index value]} (parser/get-components ast entity-id [:array :index :value])
+        index-val (interpret-expression ast index variables)
+        new-value (interpret-expression ast value variables)]
+    (when-let [current-receiver (get @variables array)]
       (cond
         ;; Mutable hash assignment
         (mutable-hash? current-receiver)
@@ -153,7 +151,7 @@
         ;; Legacy immutable hash assignment
         (map? current-receiver)
         (let [updated-hash (assoc current-receiver index-val new-value)]
-          (swap! variables assoc receiver-name updated-hash)
+          (swap! variables assoc array updated-hash)
           new-value)
 
         ;; Array assignment
@@ -165,7 +163,7 @@
                                 (vec (concat current-receiver (repeat (- idx (count current-receiver) -1) nil)))
                                 current-receiver)
                 updated-array (assoc expanded-array idx new-value)]
-            (swap! variables assoc receiver-name updated-array)
+            (swap! variables assoc array updated-array)
             new-value)
           (throw (ex-info "Array index must be integer" {:array current-receiver :index index-val})))
 
@@ -224,7 +222,7 @@
   [method-name args]
   (case method-name
     "max" (if (= 2 (count args))
-            (max (first args) (second args))
+            (let [[a b] args] (max a b))
             (throw (ex-info "Integer.max requires exactly 2 arguments" {:args args})))
     "sqrt" (if (= 1 (count args))
              (int (Math/sqrt (first args)))
@@ -575,49 +573,43 @@
 (defn interpret-assignment
   "Interpret an assignment statement."
   [ast entity-id variables]
-  (let [var-name (parser/get-component ast entity-id :variable)
-        value-id (parser/get-component ast entity-id :value)]
-    (if value-id
-      (let [value (interpret-expression ast value-id variables)]
-        (swap! variables assoc var-name value)
-        value)
+  (let [{:keys [variable value]} (parser/get-components ast entity-id [:variable :value])]
+    (if value
+      (let [interpreted-value (interpret-expression ast value variables)]
+        (swap! variables assoc variable interpreted-value)
+        interpreted-value)
       ;; Handle case where value is stored directly
       (let [direct-value (parser/get-value ast entity-id)]
-        (swap! variables assoc var-name direct-value)
+        (swap! variables assoc variable direct-value)
         direct-value))))
 
 (defn interpret-method-definition
   "Interpret a method definition like def add(a, b) ... end."
   [ast entity-id variables]
-  (let [method-name (or (parser/get-component ast entity-id :method-name)
-                        (parser/get-component ast entity-id :name))
-        params (parser/get-component ast entity-id :parameters)
-        body-id (parser/get-component ast entity-id :body)]
+  (let [{:keys [method-name name parameters body]} (parser/get-components ast entity-id [:method-name :name :parameters :body])
+        method-name (or method-name name)]
     ;; Store method definition in variables with special prefix
-    (swap! variables assoc (str "method:" method-name) {:params params :body-id body-id})
+    (swap! variables assoc (str "method:" method-name) {:params parameters :body-id body})
     nil))
 
 (defn interpret-if-statement
   "Interpret if/else statement."
   [ast entity-id variables]
-  (let [condition-id (parser/get-component ast entity-id :condition)
-        then-id (parser/get-component ast entity-id :then-branch)
-        else-id (parser/get-component ast entity-id :else-branch)
-        condition-val (interpret-expression ast condition-id variables)]
+  (let [{:keys [condition then-branch else-branch]} (parser/get-components ast entity-id [:condition :then-branch :else-branch])
+        condition-val (interpret-expression ast condition variables)]
     (if condition-val
-      (if then-id (interpret-expression ast then-id variables) nil)
-      (if else-id (interpret-expression ast else-id variables) nil))))
+      (when then-branch (interpret-expression ast then-branch variables))
+      (when else-branch (interpret-expression ast else-branch variables)))))
 
 (defn interpret-while-statement
   "Interpret while loop with break/continue support."
   [ast entity-id variables]
-  (let [condition-id (parser/get-component ast entity-id :condition)
-        body-id (parser/get-component ast entity-id :body)
+  (let [{:keys [condition body]} (parser/get-components ast entity-id [:condition :body])
         result (atom nil)
         running? (atom true)]
-    (while (and @running? (interpret-expression ast condition-id variables))
+    (while (and @running? (interpret-expression ast condition variables))
       (try
-        (reset! result (interpret-expression ast body-id variables))
+        (reset! result (interpret-expression ast body variables))
         (catch clojure.lang.ExceptionInfo e
           (let [ex-data (ex-data e)]
             (case (:type ex-data)
@@ -625,6 +617,47 @@
               :continue nil  ; Just continue to next iteration
               (throw e))))))
     @result))
+
+(defn case-equal?
+  "Implement Ruby's case equality (===) operator."
+  [pattern value]
+  (cond
+    ;; Class === instance (e.g., String === "hello")
+    (and (map? pattern) (:builtin pattern))
+    (case (:name pattern)
+      "String" (string? value)
+      "Integer" (integer? value)
+      "Array" (vector? value)
+      false)
+
+    ;; Range === value (when we implement ranges)
+    ;; For now, just use regular equality
+    :else (= pattern value)))
+
+(defn when-clause-matches?
+  "Check if a when clause matches the given value."
+  [ast clause-id expr-val variables]
+  (let [condition-ids (parser/get-component ast clause-id :conditions)]
+    (some (fn [condition-id]
+            (let [condition-val (interpret-expression ast condition-id variables)]
+              (case-equal? condition-val expr-val)))
+          condition-ids)))
+
+(defn interpret-case-statement
+  "Interpret case/when statement."
+  [ast entity-id variables]
+  (let [{:keys [expression when-clauses else-clause]} (parser/get-components ast entity-id [:expression :when-clauses :else-clause])
+        expr-val (interpret-expression ast expression variables)]
+
+    ;; Find first matching when clause
+    (if-let [matching-clause (first (filter #(when-clause-matches? ast % expr-val variables)
+                                           when-clauses))]
+      ;; Execute matching clause body
+      (let [body-id (parser/get-component ast matching-clause :body)]
+        (interpret-expression ast body-id variables))
+      ;; No match found, try else clause
+      (when else-clause
+        (interpret-expression ast else-clause variables)))))
 
 (defn interpret-break-statement
   "Interpret a break statement - throws a control flow exception."
@@ -766,16 +799,18 @@
        :class-definition (interpret-class-definition ast entity-id variables)
        :if-statement (interpret-if-statement ast entity-id variables)
        :while-statement (interpret-while-statement ast entity-id variables)
+       :case-statement (let [result (interpret-case-statement ast entity-id variables)]
+                         (when (= "true" (System/getenv "RUBY_VERBOSE"))
+                           (println "DEBUG: Case statement returned:" result))
+                         result)
+       :when-clause nil  ; When clauses are handled by case statements, not directly
        :break-statement (interpret-break-statement ast entity-id variables)
        :continue-statement (interpret-continue-statement ast entity-id variables)
        :return-statement (interpret-return-statement ast entity-id variables)
        :block (interpret-block ast entity-id variables)
 
        ;; For unknown node types, try to get the value
-       (do
-         (when (= "true" (System/getenv "RUBY_VERBOSE"))
-           (println "Unknown node type:" node-type "for entity" entity-id))
-         (parser/get-value ast entity-id))))))
+       (parser/get-value ast entity-id)))))
 
 (defn create-builtin-classes
   "Create built-in classes like Integer, String, etc."

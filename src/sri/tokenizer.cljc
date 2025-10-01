@@ -3,7 +3,7 @@
 (defrecord Token [type value line column])
 
 (def keywords
-  #{"if" "else" "elsif" "end" "while" "def" "class" "module" "nil" "true" "false" "and" "or" "not" "return" "break" "continue" "self"})
+  #{"if" "else" "elsif" "end" "while" "def" "class" "module" "nil" "true" "false" "and" "or" "not" "return" "break" "continue" "self" "case" "when" "for" "until" "in"})
 
 (def operators
   {"+" :plus

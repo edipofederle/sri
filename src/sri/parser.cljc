@@ -44,6 +44,11 @@
   [ast entity-id component-type]
   (get-in ast [:components component-type entity-id]))
 
+(defn get-components
+  "Get multiple components as a map for destructuring."
+  [ast entity-id component-keys]
+  (into {} (map (fn [k] [k (get-component ast entity-id k)]) component-keys)))
+
 ;; Macro to define multiple component accessor functions
 (defmacro def-component-accessors
   "Define fast accessor functions for multiple component types."
@@ -201,7 +206,7 @@
                                           :position {:line (:line token) :column (:column token)})]
       [(assoc new-state :ast new-ast) entity-id])))
 
-(declare parse-expression parse-statement parse-primary)
+(declare parse-expression parse-statement parse-primary parse-case-statement)
 
 (defn parse-argument-list
   "Parse a comma-separated argument list enclosed in parentheses."
@@ -460,6 +465,7 @@
       (parse-symbol-literal state)
       (parse-array-literal state)
       (parse-hash-literal state)
+      (parse-case-statement state)
       (when (match-token? state :instance-variable)
         (let [[var-token state-after-var] (consume-token state)
               [new-ast entity-id] (create-node (:ast state-after-var) :instance-variable-access
@@ -657,6 +663,103 @@
                                          :body body-id)]
       [(assoc final-state :ast new-ast) entity-id])))
 
+(defn when-body-terminator?
+  "Check if current token terminates a when clause body."
+  [state]
+  (let [token (current-token state)]
+    (or (nil? token)
+        (match-token? state :keyword "when")
+        (match-token? state :keyword "else")
+        (match-token? state :keyword "end"))))
+
+(defn parse-when-body
+  "Parse when clause body statements until 'when', 'else', or 'end' keyword."
+  [state]
+  (let [[new-ast block-id] (create-node (:ast state) :block :statements [])
+        initial-state (skip-separators (assoc state :ast new-ast))]
+    (loop [current-state initial-state
+           statements []]
+      (cond
+        (nil? (current-token current-state))
+        (throw (ex-info "Expected 'when', 'else', or 'end' to close when clause body" {}))
+
+        (when-body-terminator? current-state)
+        (let [new-ast (set-component (:ast current-state) block-id :statements statements)]
+          [(assoc current-state :ast new-ast) block-id])
+
+        :else
+        (let [[state-after-stmt stmt-id] (parse-statement current-state)
+              state-skip-newlines (skip-separators state-after-stmt)]
+          (recur state-skip-newlines (conj statements stmt-id)))))))
+
+(defn parse-condition-list
+  "Parse comma-separated condition list for when clauses."
+  [state]
+  (loop [conditions []
+         current-state state]
+    (let [[state-after-expr expr-id] (parse-expression current-state)
+          state-after-newlines (skip-separators state-after-expr)]
+      (if (match-token? state-after-newlines :operator ",")
+        ;; Found comma, continue parsing
+        (let [[_ state-after-comma] (consume-token state-after-newlines)]
+          (recur (conj conditions expr-id) state-after-comma))
+        ;; No more conditions
+        [state-after-newlines (conj conditions expr-id)]))))
+
+(defn parse-when-clause
+  "Parse a single when clause with conditions and body."
+  [state ast]
+  (when (match-token? state :keyword "when")
+    (let [[_ state-after-when] (consume-token state)
+          [state-after-conditions condition-ids] (parse-condition-list state-after-when)
+          [state-after-body body-id] (parse-when-body state-after-conditions)
+          [new-ast when-node-id] (create-node (:ast state-after-body) :when-clause
+                                            :conditions condition-ids
+                                            :body body-id)]
+      [(assoc state-after-body :ast new-ast) new-ast when-node-id])))
+
+(defn parse-case-statement
+  "Parse a case/when statement."
+  [state]
+  (when (match-token? state :keyword "case")
+    (let [[_ state-after-case] (consume-token state)
+          [state-after-expr expr-id] (parse-expression state-after-case)
+          state-skip-newlines (skip-separators state-after-expr)]
+      (loop [when-clause-ids []
+             current-state state-skip-newlines
+             current-ast (:ast state-skip-newlines)
+             else-id nil]
+        (cond
+          ;; Parse when clause
+          (match-token? current-state :keyword "when")
+          (let [[state-after-when new-ast when-clause-id] (parse-when-clause current-state current-ast)]
+            (recur (conj when-clause-ids when-clause-id) 
+                   state-after-when
+                   new-ast
+                   else-id))
+          
+          ;; Parse else clause
+          (match-token? current-state :keyword "else")
+          (let [[_ state-after-else] (consume-token current-state)
+                [state-after-else-body else-body-id] (parse-block state-after-else)]
+            (recur when-clause-ids 
+                   state-after-else-body
+                   (:ast state-after-else-body)
+                   else-body-id))
+          
+          ;; End case
+          (match-token? current-state :keyword "end")
+          (let [[_ final-state] (consume-token current-state)
+                [new-ast entity-id] (create-node current-ast :case-statement
+                                               :expression expr-id
+                                               :when-clauses when-clause-ids
+                                               :else-clause else-id)]
+            [(assoc final-state :ast new-ast) entity-id])
+          
+          :else
+          (throw (ex-info "Expected 'when', 'else', or 'end' in case statement"
+                         {:token (current-token current-state)})))))))
+
 (defn parse-parameter-list
   "Parse a comma-separated parameter list enclosed in parentheses."
   [state]
@@ -848,6 +951,7 @@
       (parse-method-definition state)
       (parse-if-statement state)
       (parse-while-statement state)
+      (parse-case-statement state)
       (parse-return-statement state)
       (parse-break-statement state)
       (parse-continue-statement state)
