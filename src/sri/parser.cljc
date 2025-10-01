@@ -3,6 +3,7 @@
 
    Implements a recursive descent parser that converts tokens into
    an ECS-based AST representation."
+  (:require [sri.tokenizer :as tokenizer])
   (:require [clojure.string]))
 
 (defonce ^:private entity-counter (atom 0))
@@ -162,6 +163,17 @@
     (let [[token new-state] (consume-token state)
           [new-ast entity-id] (create-node (:ast new-state) :string-literal
                                           :value (:value token)
+                                          :position {:line (:line token) :column (:column token)})]
+      [(assoc new-state :ast new-ast) entity-id])))
+
+(defn parse-interpolated-string
+  "Parse an interpolated string with #{} expressions."
+  [state]
+  (when (match-token? state :interpolated-string)
+    (let [[token new-state] (consume-token state)
+          parts (:value token)
+          [new-ast entity-id] (create-node (:ast new-state) :interpolated-string
+                                          :parts parts
                                           :position {:line (:line token) :column (:column token)})]
       [(assoc new-state :ast new-ast) entity-id])))
 
@@ -459,6 +471,7 @@
   (or (parse-integer-literal state)
       (parse-float-literal state)
       (parse-string-literal state)
+      (parse-interpolated-string state)
       (parse-boolean-literal state)
       (parse-nil-literal state)
       (parse-self-literal state)

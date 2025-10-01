@@ -147,14 +147,33 @@
             [(create-token token-type number-str start-line start-column)
              current-state]))))))
 
-(defn read-string-literal
-  "Read a string literal from the input."
+(declare read-interpolation-expression)
+
+(defn string-contains-interpolation?
+  "Check if a string contains #{...} interpolation."
+  [state quote-char]
+  (loop [current-state state]
+    (let [ch (peek-char current-state)]
+      (cond
+        (nil? ch) false
+        (= ch quote-char) false
+        (and (= ch \#) 
+             (let [[_ next-state] (next-char current-state)]
+               (and next-state (= (peek-char next-state) \{)))) true
+        :else 
+        (let [[_ next-state] (next-char current-state)]
+          (if next-state
+            (recur next-state)
+            false))))))
+
+(defn read-interpolated-string-parts
+  "Read parts of an interpolated string, separating text and expressions."
   [state quote-char]
   (let [start-line (:line state)
         start-column (:column state)
-        [_ state-after-quote] (next-char state)
-        sb (StringBuilder.)]
-    (loop [current-state state-after-quote]
+        [_ state-after-quote] (next-char state)]
+    (loop [current-state state-after-quote
+           parts []]
       (let [ch (peek-char current-state)]
         (cond
           (nil? ch)
@@ -163,27 +182,103 @@
 
           (= ch quote-char)
           (let [[_ final-state] (next-char current-state)]
-            [(create-token :string (.toString sb) start-line start-column)
+            [(create-token :interpolated-string parts start-line start-column)
              final-state])
 
-          (= ch \\)
-          (let [[_ escape-state] (next-char current-state)
-                [escaped-ch new-state] (next-char escape-state)
-                actual-char (case escaped-ch
-                             \n \newline
-                             \t \tab
-                             \r \return
-                             \\ \\
-                             \" \"
-                             \' \'
-                             escaped-ch)]
-            (.append sb actual-char)
-            (recur new-state))
+          (and (= ch \#) 
+               (let [[_ next-state] (next-char current-state)]
+                 (and next-state (= (peek-char next-state) \{))))
+          ;; Found interpolation start #{
+          (let [;; Skip #{ 
+                [_ state-after-hash] (next-char current-state)
+                [_ state-after-brace] (next-char state-after-hash)
+                ;; Read expression until }
+                [expr-source expr-end-state] (read-interpolation-expression state-after-brace)]
+            (recur expr-end-state 
+                   (conj parts {:type :expression :source expr-source})))
+
+          :else
+          ;; Regular character - add to text part
+          (let [[consumed-ch new-state] (next-char current-state)
+                last-part (last parts)]
+            (if (string? last-part)
+              ;; Append to existing text part
+              (recur new-state (conj (pop parts) (str last-part consumed-ch)))
+              ;; Start new text part
+              (recur new-state (conj parts (str consumed-ch))))))))))
+
+(defn read-interpolation-expression
+  "Read the source code inside #{...} until closing brace."
+  [state]
+  (let [sb (StringBuilder.)]
+    (loop [current-state state
+           brace-count 1]
+      (let [ch (peek-char current-state)]
+        (cond
+          (nil? ch)
+          (throw (ex-info "Unterminated interpolation expression" {}))
+
+          (= ch \})
+          (if (= brace-count 1)
+            ;; End of interpolation
+            (let [[_ final-state] (next-char current-state)]
+              [(.toString sb) final-state])
+            ;; Nested brace
+            (let [[consumed-ch new-state] (next-char current-state)]
+              (.append sb consumed-ch)
+              (recur new-state (dec brace-count))))
+
+          (= ch \{)
+          (let [[consumed-ch new-state] (next-char current-state)]
+            (.append sb consumed-ch)
+            (recur new-state (inc brace-count)))
 
           :else
           (let [[consumed-ch new-state] (next-char current-state)]
             (.append sb consumed-ch)
-            (recur new-state)))))))
+            (recur new-state brace-count)))))))
+
+(defn read-string-literal
+  "Read a string literal from the input."
+  [state quote-char]
+  (let [start-line (:line state)
+        start-column (:column state)
+        [_ state-after-quote] (next-char state)]
+    ;; Check if this is an interpolated string (contains #{)
+    (if (and (= quote-char \") (string-contains-interpolation? state-after-quote quote-char))
+      (read-interpolated-string-parts state quote-char)
+      ;; Regular string literal
+      (let [sb (StringBuilder.)]
+        (loop [current-state state-after-quote]
+          (let [ch (peek-char current-state)]
+            (cond
+              (nil? ch)
+              (throw (ex-info "Unterminated string literal"
+                             {:line start-line :column start-column}))
+
+              (= ch quote-char)
+              (let [[_ final-state] (next-char current-state)]
+                [(create-token :string (.toString sb) start-line start-column)
+                 final-state])
+
+              (= ch \\)
+              (let [[_ escape-state] (next-char current-state)
+                    [escaped-ch new-state] (next-char escape-state)
+                    actual-char (case escaped-ch
+                                 \n \newline
+                                 \t \tab
+                                 \r \return
+                                 \\ \\
+                                 \" \"
+                                 \' \'
+                                 escaped-ch)]
+                (.append sb actual-char)
+                (recur new-state))
+
+              :else
+              (let [[consumed-ch new-state] (next-char current-state)]
+                (.append sb consumed-ch)
+                (recur new-state)))))))))
 
 (defn read-operator
   "Read an operator or punctuation from the input."

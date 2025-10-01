@@ -15,6 +15,29 @@
       (nil? value) nil
       :else value)))
 
+(defn interpret-interpolated-string
+  "Interpret an interpolated string by evaluating expressions and concatenating."
+  [ast entity-id variables]
+  (let [parts (parser/get-component ast entity-id :parts)]
+    (apply str (map (fn [part]
+                      (cond
+                        ;; Text part - return as is
+                        (string? part)
+                        part
+                        
+                        ;; Expression part - parse and evaluate
+                        (and (map? part) (:source part))
+                        (let [expr-source (:source part)
+                              expr-tokens (sri.tokenizer/tokenize expr-source)
+                              temp-state (parser/create-parse-state expr-tokens)
+                              [final-state expr-id] (parser/parse-expression temp-state)]
+                          (str (interpret-expression (:ast final-state) expr-id variables)))
+                        
+                        ;; Unknown part type
+                        :else
+                        (str "UNKNOWN: " part)))
+                    parts))))
+
 (defn interpret-array-literal
   "Interpret an array literal like [1, 2, 3]."
   [ast entity-id variables]
@@ -780,6 +803,7 @@
      (case node-type
        :integer-literal (interpret-literal ast entity-id)
        :string-literal (interpret-literal ast entity-id)
+       :interpolated-string (interpret-interpolated-string ast entity-id variables)
        :boolean-literal (interpret-literal ast entity-id)
        :nil-literal (interpret-literal ast entity-id)
        :symbol-literal (interpret-literal ast entity-id)
