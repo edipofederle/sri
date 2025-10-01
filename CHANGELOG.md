@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file. This change
 
 ## [Unreleased]
 ### Added
+- **String Interpolation** - Complete implementation of Ruby-style string interpolation
+  - `"Hello #{variable}!"` syntax with variable interpolation
+  - `"Result: #{expression + 1}"` with full expression evaluation
+  - Multiple interpolations in single string: `"#{a} plus #{b} equals #{a + b}"`
+  - Support for complex expressions, method calls, and mathematical operations
 - Enhanced control flow with case/when statements
 - Support for multiple conditions in when clauses (e.g., `when 1, 2, 3`)
 - Case equality (===) operator for pattern matching
@@ -11,6 +16,7 @@ All notable changes to this project will be documented in this file. This change
 - Case statements work as expressions (can be assigned and returned)
 - `get-components` helper function for cleaner multi-component access
 - Destructuring patterns throughout interpreter functions
+- New example file: `examples/string_interpolation.rb` demonstrating interpolation features
 
 ### Fixed
 - GraalVM native image compatibility by replacing `aget` with `.charAt` for string access
@@ -28,6 +34,12 @@ All notable changes to this project will be documented in this file. This change
 - Improved .gitignore with comprehensive patterns for Clojure/GraalVM projects
 
 ### Improved
+- **Tokenizer Enhancements**
+  - **String Interpolation Detection**: Added `string-contains-interpolation?` and `read-interpolated-string-parts`
+  - **Expression Extraction**: Added `read-interpolation-expression` to capture `#{...}` content
+  - Enhanced string literal parsing to handle both regular and interpolated strings
+  - Improved null safety in character peeking operations
+
 - **Code Quality & Performance**
   - Refactored case statement implementation for better maintainability
   - Implemented destructuring patterns in major interpreter functions
@@ -37,12 +49,14 @@ All notable changes to this project will be documented in this file. This change
   - Removed debug code and unused variables
 
 - **Parser Enhancements**
+  - **String Interpolation Support**: Added `parse-interpolated-string` for `#{...}` expressions
   - Created `parse-condition-list` for better comma-separated parsing
   - Added `parse-when-body` for proper when clause termination
   - Extracted `when-body-terminator?` predicate for cleaner logic
   - Better separation of concerns in parsing logic
 
 - **Interpreter Optimizations**
+  - **String Interpolation Engine**: Added `interpret-interpolated-string` with dynamic expression parsing
   - Used `when-clause-matches?` helper for better separation of concerns
   - Replaced `if-let` with `when` for side-effect-only branches
   - More idiomatic Clojure patterns throughout codebase
