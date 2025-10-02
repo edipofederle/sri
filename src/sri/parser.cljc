@@ -676,6 +676,37 @@
                                          :body body-id)]
       [(assoc final-state :ast new-ast) entity-id])))
 
+(defn parse-for-statement
+  "Parse a for loop statement (for item in array)."
+  [state]
+  (when (match-token? state :keyword "for")
+    (let [[_ state-after-for] (consume-token state)
+          [var-token state-after-var] (expect-token state-after-for :identifier)
+          [_ state-after-in] (expect-token state-after-var :keyword "in")
+          [state-after-iterable iterable-id] (parse-expression state-after-in)
+          state-skip-newlines (skip-separators state-after-iterable)
+          [state-after-body body-id] (parse-block state-skip-newlines)
+          [_ final-state] (expect-token state-after-body :keyword "end")
+          [new-ast entity-id] (create-node (:ast final-state) :for-statement
+                                         :variable (:value var-token)
+                                         :iterable iterable-id
+                                         :body body-id)]
+      [(assoc final-state :ast new-ast) entity-id])))
+
+(defn parse-until-statement
+  "Parse an until loop statement."
+  [state]
+  (when (match-token? state :keyword "until")
+    (let [[_ state-after-until] (consume-token state)
+          [state-after-condition condition-id] (parse-expression state-after-until)
+          state-skip-newlines (skip-separators state-after-condition)
+          [state-after-body body-id] (parse-block state-skip-newlines)
+          [_ final-state] (expect-token state-after-body :keyword "end")
+          [new-ast entity-id] (create-node (:ast final-state) :until-statement
+                                         :condition condition-id
+                                         :body body-id)]
+      [(assoc final-state :ast new-ast) entity-id])))
+
 (defn when-body-terminator?
   "Check if current token terminates a when clause body."
   [state]
@@ -892,6 +923,28 @@
                                          :position {:line (:line continue-token) :column (:column continue-token)})]
       [(assoc state-after-continue :ast new-ast) entity-id])))
 
+(defn parse-next-statement
+  "Parse a next statement (Ruby's continue)."
+  [state]
+  (when (match-token? state :keyword "next")
+    (let [[next-token state-after-next] (consume-token state)
+          [new-ast entity-id] (create-node (:ast state-after-next) :next-statement
+                                         :position {:line (:line next-token) :column (:column next-token)})]
+      [(assoc state-after-next :ast new-ast) entity-id])))
+
+(defn parse-loop-statement
+  "Parse a loop do...end infinite loop statement."
+  [state]
+  (when (match-token? state :keyword "loop")
+    (let [[_ state-after-loop] (consume-token state)
+          [_ state-after-do] (expect-token state-after-loop :keyword "do")
+          state-skip-newlines (skip-separators state-after-do)
+          [state-after-body body-id] (parse-block state-skip-newlines)
+          [_ final-state] (expect-token state-after-body :keyword "end")
+          [new-ast entity-id] (create-node (:ast final-state) :loop-statement
+                                         :body body-id)]
+      [(assoc final-state :ast new-ast) entity-id])))
+
 (defn parse-indexed-assignment-statement
   "Parse an indexed assignment statement (identifier[expr] = expression)."
   [state]
@@ -964,10 +1017,14 @@
       (parse-method-definition state)
       (parse-if-statement state)
       (parse-while-statement state)
+      (parse-for-statement state)
+      (parse-until-statement state)
       (parse-case-statement state)
       (parse-return-statement state)
       (parse-break-statement state)
       (parse-continue-statement state)
+      (parse-next-statement state)
+      (parse-loop-statement state)
       (parse-instance-variable-assignment state)
       (parse-class-variable-assignment state)
       (parse-indexed-assignment-statement state)
@@ -1083,6 +1140,28 @@
                      (get then-branch entity-id)
                      (get else-branch entity-id)])
 
+      ;; While statements have condition and body
+      (= :while-statement node-type)
+      (filter some? [(get condition entity-id)
+                     (get body entity-id)])
+
+      ;; For statements have iterable and body
+      (= :for-statement node-type)
+      (let [iterable-ref (get-in components [:iterable entity-id])
+            body-ref (get body entity-id)]
+        (filter some? [iterable-ref body-ref]))
+
+      ;; Until statements have condition and body
+      (= :until-statement node-type)
+      (filter some? [(get condition entity-id)
+                     (get body entity-id)])
+
+      ;; Loop statements have just body
+      (= :loop-statement node-type)
+      (if-let [body-ref (get body entity-id)]
+        [body-ref]
+        [])
+
       ;; Method calls have receiver and arguments
       (= :method-call node-type)
       (let [args (get arguments entity-id [])
@@ -1133,6 +1212,9 @@
       :class-method-definition (str "def self." name "(" (clojure.string/join ", " parameters) ")")
       :if-statement "if"
       :while-statement "while"
+      :for-statement (str "for " variable " in ...")
+      :until-statement "until"
+      :loop-statement "loop"
       :unary-operation (str operator)
       :block "block"
       :program "program"

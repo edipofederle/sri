@@ -648,6 +648,65 @@
               (throw e))))))
     @result))
 
+(defn interpret-for-statement
+  "Interpret for loop with break/continue support."
+  [ast entity-id variables]
+  (let [{:keys [variable iterable body]} (parser/get-components ast entity-id [:variable :iterable :body])
+        iterable-value (interpret-expression ast iterable variables)
+        result (atom nil)
+        should-break (atom false)]
+    (when (vector? iterable-value)
+      (loop [items iterable-value]
+        (when (and (seq items) (not @should-break))
+          (let [item (first items)]
+            (try
+              ;; Set the loop variable to the current item
+              (swap! variables assoc variable item)
+              (reset! result (interpret-expression ast body variables))
+              (catch clojure.lang.ExceptionInfo e
+                (let [ex-data (ex-data e)]
+                  (case (:type ex-data)
+                    :break (reset! should-break true)  ; Exit the loop entirely
+                    :continue nil   ; Continue to next iteration
+                    (throw e)))))
+            (when (not @should-break)
+              (recur (rest items)))))))
+    @result))
+
+(defn interpret-until-statement
+  "Interpret until loop with break/continue support."
+  [ast entity-id variables]
+  (let [{:keys [condition body]} (parser/get-components ast entity-id [:condition :body])
+        result (atom nil)
+        running? (atom true)]
+    (while (and @running? (not (interpret-expression ast condition variables)))
+      (try
+        (reset! result (interpret-expression ast body variables))
+        (catch clojure.lang.ExceptionInfo e
+          (let [ex-data (ex-data e)]
+            (case (:type ex-data)
+              :break (reset! running? false)
+              :continue nil  ; Just continue to next iteration
+              (throw e))))))
+    @result))
+
+(defn interpret-loop-statement
+  "Interpret infinite loop with break/continue support."
+  [ast entity-id variables]
+  (let [body (parser/get-component ast entity-id :body)
+        result (atom nil)
+        running? (atom true)]
+    (while @running?
+      (try
+        (reset! result (interpret-expression ast body variables))
+        (catch clojure.lang.ExceptionInfo e
+          (let [ex-data (ex-data e)]
+            (case (:type ex-data)
+              :break (reset! running? false)
+              :continue nil  ; Just continue to next iteration
+              (throw e))))))
+    @result))
+
 (defn case-equal?
   "Implement Ruby's case equality (===) operator."
   [pattern value]
@@ -698,6 +757,11 @@
   "Interpret a continue statement - throws a control flow exception."
   [ast entity-id variables]
   (throw (ex-info "continue" {:type :continue})))
+
+(defn interpret-next-statement
+  "Interpret a next statement (Ruby's continue) - throws a control flow exception."
+  [ast entity-id variables]
+  (throw (ex-info "next" {:type :continue})))
 
 (defn interpret-return-statement
   "Interpret a return statement - throws a control flow exception with the return value."
@@ -830,6 +894,9 @@
        :class-definition (interpret-class-definition ast entity-id variables)
        :if-statement (interpret-if-statement ast entity-id variables)
        :while-statement (interpret-while-statement ast entity-id variables)
+       :for-statement (interpret-for-statement ast entity-id variables)
+       :until-statement (interpret-until-statement ast entity-id variables)
+       :loop-statement (interpret-loop-statement ast entity-id variables)
        :case-statement (let [result (interpret-case-statement ast entity-id variables)]
                          (when (= "true" (System/getenv "RUBY_VERBOSE"))
                            (println "DEBUG: Case statement returned:" result))
@@ -837,6 +904,7 @@
        :when-clause nil  ; When clauses are handled by case statements, not directly
        :break-statement (interpret-break-statement ast entity-id variables)
        :continue-statement (interpret-continue-statement ast entity-id variables)
+       :next-statement (interpret-next-statement ast entity-id variables)
        :return-statement (interpret-return-statement ast entity-id variables)
        :block (interpret-block ast entity-id variables)
 
