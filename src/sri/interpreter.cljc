@@ -921,21 +921,28 @@
 
 (defn interpret-program
   "Interpret a complete program (sequence of statements)."
-  [ast root-entity-id]
-  (let [variables (atom (create-builtin-classes))]
-    (if (= :program (parser/get-node-type ast root-entity-id))
-      ;; Handle program with multiple statements
-      (let [statement-ids (parser/get-children ast root-entity-id)
-            results (map #(interpret-expression ast % variables) statement-ids)]
-        (last results)) ; Return the last expression result
-      ;; Handle single expression
-      (interpret-expression ast root-entity-id variables))))
+  ([ast root-entity-id]
+   (interpret-program ast root-entity-id {}))
+  ([ast root-entity-id opts]
+   (let [builtin-vars (create-builtin-classes)
+         custom-vars (get opts :namespaces {})
+         initial-vars (merge builtin-vars custom-vars)
+         variables (atom initial-vars)]
+     (if (= :program (parser/get-node-type ast root-entity-id))
+       ;; Handle program with multiple statements
+       (let [statement-ids (parser/get-children ast root-entity-id)
+             results (map #(interpret-expression ast % variables) statement-ids)]
+         (last results)) ; Return the last expression result
+       ;; Handle single expression
+       (interpret-expression ast root-entity-id variables)))))
 
 (defn evaluate-directly
   "Main entry point for direct AST interpretation."
-  [ast root-entity-id]
-  (try
-    (interpret-program ast root-entity-id)
-    (catch Exception e
-      (println "Interpreter Error:" (.getMessage e))
-      (throw e))))
+  ([ast root-entity-id]
+   (evaluate-directly ast root-entity-id {}))
+  ([ast root-entity-id opts]
+   (try
+     (interpret-program ast root-entity-id opts)
+     (catch Exception e
+       (println "Interpreter Error:" (.getMessage e))
+       (throw e)))))

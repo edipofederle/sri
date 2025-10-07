@@ -29,6 +29,32 @@ lein uberjar
 
 ## Usage
 
+### As a Library (NEW!)
+
+Sri can now be used as a Clojure library for safe Ruby evaluation:
+
+```clojure
+(require '[sri.core :as sri])
+
+;; Basic evaluation
+(sri/eval-string "1 + 2")                    ; => 3
+(sri/eval-string "puts('Hello World!')")     ; prints "Hello World!", returns nil
+
+;; With custom variables
+(sri/eval-string "name + ' is ' + age.to_s + ' years old'" 
+                 {:namespaces {"name" "Alice" "age" 30}})
+; => "Alice is 30 years old"
+
+;; Method definitions and calls
+(sri/eval-string "def greet(name); 'Hello ' + name; end; greet('Bob')")
+; => "Hello Bob"
+
+;; Array operations
+(sri/eval-string "[1, 2, 3, 4, 5].length")   ; => 5
+```
+
+### Command Line Interface
+
 ### Running with Java
 ```bash
 java -jar target/uberjar/sri-0.1.0-SNAPSHOT-standalone.jar <ruby-file>
