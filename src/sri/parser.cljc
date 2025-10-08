@@ -3,8 +3,9 @@
 
    Implements a recursive descent parser that converts tokens into
    an ECS-based AST representation."
-  (:require [sri.tokenizer :as tokenizer])
-  (:require [clojure.string]))
+  (:require [sri.tokenizer :as tokenizer]
+            [sri.inline-cache]
+            [clojure.string]))
 
 (defonce ^:private entity-counter (atom 0))
 
@@ -359,6 +360,7 @@
                                        :method method-name
                                        :arguments args
                                        :block block-id
+                                       :ic-cache (atom (sri.inline-cache/empty-ic))
                                        :position {:line (:line token) :column (:column token)})]
     (when block-id
       (binding [*out* *err*]

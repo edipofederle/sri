@@ -1,6 +1,14 @@
 (ns sri.interpreter
   "Direct AST interpreter for Ruby"
-  (:require [sri.parser :as parser]))
+  (:require [sri.parser :as parser]
+            [sri.inline-cache :as ic]))
+
+;; IC Debug flag - can be enabled via environment variable
+(def ^:dynamic *ic-debug* (= "true" (System/getenv "SRI_IC_DEBUG")))
+
+;; Debug: print IC debug status on load
+(when *ic-debug*
+  (println "IC DEBUG MODE ENABLED"))
 
 (declare interpret-expression interpret-statement interpret-user-method execute-block)
 
@@ -503,44 +511,167 @@
 
       instance))) ; Return the new instance
 
+;; IC Helper Functions
+(defn execute-cached-method
+  "Execute a method using cached method info from IC."
+  [method-info receiver args variables ast]
+  (cond
+    ;; Handle attr getter methods
+    (:attr-getter method-info)
+    (let [attr-var-name (str "@" (:attr-name method-info))]
+      (get @(:instance-variables receiver) attr-var-name))
+    
+    ;; Handle attr setter methods  
+    (:attr-setter method-info)
+    (let [attr-var-name (str "@" (:attr-name method-info))
+          value (first args)]
+      (swap! (:instance-variables receiver) assoc attr-var-name value)
+      value)
+    
+    ;; Handle user-defined methods
+    (and (:ast method-info) (:body method-info))
+    (let [method-ast (:ast method-info)
+          method-body (:body method-info)
+          method-params (:parameters method-info)
+          method-vars (atom (assoc @variables "self" receiver))]
+      ;; Bind parameters
+      (when (and method-params (seq args))
+        (doseq [[param arg] (map vector method-params args)]
+          (swap! method-vars assoc param arg)))
+      ;; Execute method body
+      (try
+        (interpret-expression method-ast method-body method-vars)
+        (catch clojure.lang.ExceptionInfo e
+          (case (:type (ex-data e))
+            :return (:value (ex-data e))
+            (throw e)))))
+    
+    :else
+    (throw (ex-info "Invalid cached method info" {:method-info method-info}))))
+
+(defn extract-method-info-for-cache
+  "Extract cacheable method information from a successful method lookup.
+   Returns nil if method is not cacheable, or method-info map if cacheable."
+  [receiver method-name]
+  (cond
+    ;; Try to extract instance method info (both attr and user-defined)
+    (and (map? receiver) (:class receiver) (:class-info receiver))
+    (let [instance receiver
+          class-info (:class-info instance)
+          instance-methods @(:methods class-info)]
+      (when-let [method-info (get instance-methods method-name)]
+        ;; Cache attr accessors and user-defined methods
+        (when (or (:attr-getter method-info) 
+                  (:attr-setter method-info)
+                  (and (:ast method-info) (:body method-info)))
+          method-info)))
+    
+    ;; Try to extract class method info
+    (and (map? receiver) (:name receiver) (:class-methods receiver))
+    (let [class-methods (if (instance? clojure.lang.Atom (:class-methods receiver))
+                          @(:class-methods receiver)
+                          (:class-methods receiver))]
+      (when-let [method-info (get class-methods method-name)]
+        (when (and (:ast method-info) (:body method-info))
+          method-info)))
+    
+    ;; Built-in methods are not cacheable for now
+    ;; (could be optimized later with method type info)
+    :else nil))
+
+(defn debug-ic-stats
+  "Debug function to print IC statistics for a method call AST node."
+  [ast entity-id method-name call-site]
+  (when-let [ic-cache-atom (parser/get-component ast entity-id :ic-cache)]
+    (let [ic-state @ic-cache-atom
+          debug-output (ic/format-ic-debug ic-state method-name call-site)]
+      (println debug-output))))
+
+(defn debug-ic-transition
+  "Debug function to print IC state transitions."
+  [old-state new-state class-name method-name]
+  (when-let [message (ic/ic-transition-message old-state new-state class-name method-name)]
+    (println message)))
+
+(defn interpret-method-call-original
+  "Original method call logic without IC optimization."
+  [receiver method-name args variables ast entity-id]
+  ;; Try different method resolution strategies
+  (let [class-result (try-class-method-call receiver method-name args variables ast)
+        instance-result (when (= class-result ::method-not-found)
+                         (try-instance-method-call receiver method-name args variables ast))
+        block-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found))
+                      (try-block-method receiver method-name ast entity-id variables))
+        builtin-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result))
+                        (try-builtin-instance-method receiver method-name args))
+        new-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
+                             (= builtin-result ::method-not-found)
+                             (= method-name "new"))
+                    (try-class-instantiation receiver args variables ast))]
+    (cond
+      ;; Handle class methods - check for sentinel
+      (not= class-result ::method-not-found) class-result
+      ;; Handle instance methods - check for sentinel
+      (not= instance-result ::method-not-found) instance-result
+      block-result block-result
+      ;; Handle builtin methods - check for sentinel
+      (not= builtin-result ::method-not-found) builtin-result
+      new-result new-result
+      ;; No method found
+      :else (throw (ex-info (str "Unknown method: " method-name " on " (type receiver))
+                           {:method method-name :receiver receiver :args args})))))
+
 (defn interpret-method-call
-  "Interpret a method call like puts(value) or obj.method(args)."
+  "Interpret a method call like puts(value) or obj.method(args) with IC optimization."
   [ast entity-id variables]
   (let [method-name (parser/get-component ast entity-id :method)
         receiver-id (parser/get-receiver ast entity-id)
         args-ids (or (parser/get-component ast entity-id :arguments)
                      (parser/get-children ast entity-id))
-        args (map #(interpret-expression ast % variables) args-ids)]
+        args (map #(interpret-expression ast % variables) args-ids)
+        ic-cache-atom (parser/get-component ast entity-id :ic-cache)]
 
     (if receiver-id
-      ;; Method call on object: obj.method(args)
-      (let [receiver (interpret-expression ast receiver-id variables)]
-        ;; Try different method resolution strategies
-        (let [class-result (try-class-method-call receiver method-name args variables ast)
-              instance-result (when (= class-result ::method-not-found)
-                               (try-instance-method-call receiver method-name args variables ast))
-              block-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found))
-                            (try-block-method receiver method-name ast entity-id variables))
-              builtin-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result))
-                              (try-builtin-instance-method receiver method-name args))
-              new-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
-                                   (= builtin-result ::method-not-found)
-                                   (= method-name "new"))
-                          (try-class-instantiation receiver args variables ast))]
-          (cond
-            ;; Handle class methods - check for sentinel
-            (not= class-result ::method-not-found) class-result
-            ;; Handle instance methods - check for sentinel
-            (not= instance-result ::method-not-found) instance-result
-            block-result block-result
-            ;; Handle builtin methods - check for sentinel
-            (not= builtin-result ::method-not-found) builtin-result
-            new-result new-result
-            ;; No method found
-            :else (throw (ex-info (str "Unknown method: " method-name " on " (type receiver))
-                                 {:method method-name :receiver receiver :args args})))))
-
-      ;; Function call: method(args)
+      ;; Method call on object: obj.method(args) - IC optimization candidate
+      (let [receiver (interpret-expression ast receiver-id variables)
+            class-name (ic/get-receiver-class-name receiver)]
+        
+        ;; Fast path: try IC lookup first
+        (if ic-cache-atom
+          (let [ic-state @ic-cache-atom
+                [hit? cached-method-info] (ic/ic-lookup ic-state class-name)
+                call-site (str (parser/get-component ast entity-id :position))]
+            
+            ;; Debug: IC lookup attempt
+            (when *ic-debug*
+              (println (str "IC LOOKUP [" call-site "] method=" method-name 
+                           " class=" class-name " hit=" hit?)))
+            
+            (if hit?
+              ;; IC Hit: use cached method directly
+              (do
+                (swap! ic-cache-atom ic/ic-hit)
+                (when *ic-debug*
+                  (debug-ic-stats ast entity-id method-name call-site))
+                (execute-cached-method cached-method-info receiver args variables ast))
+              
+              ;; IC Miss: do full lookup and update cache
+              (let [old-state @ic-cache-atom
+                    result (interpret-method-call-original receiver method-name args variables ast entity-id)
+                    method-info (extract-method-info-for-cache receiver method-name)]
+                (swap! ic-cache-atom ic/ic-miss)
+                (when method-info
+                  (swap! ic-cache-atom #(ic/ic-update % class-name method-info))
+                  (when *ic-debug*
+                    (debug-ic-transition old-state @ic-cache-atom class-name method-name)))
+                (when *ic-debug*
+                  (debug-ic-stats ast entity-id method-name call-site))
+                result)))
+          
+          ;; No IC cache: fallback to original method
+          (interpret-method-call-original receiver method-name args variables ast entity-id)))
+      
+      ;; Function call: method(args) - no IC needed
       (case method-name
         "puts" (do
                  (if (empty? args)
