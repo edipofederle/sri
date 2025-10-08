@@ -609,6 +609,7 @@
       :else
       current-state)))
 
+
 (defn parse-block
   "Parse a block of statements until 'end' keyword."
   [state]
@@ -637,6 +638,7 @@
           (let [[state-after-stmt stmt-id] (parse-statement current-state)
                 state-after-newlines (skip-separators state-after-stmt)]
             (recur state-after-newlines (conj statements stmt-id))))))))
+
 
 (defn parse-if-statement
   "Parse an if/else statement."
@@ -863,6 +865,37 @@
                                          :position {:line (:line method-token) :column (:column method-token)})]
       [(assoc final-state :ast new-ast) entity-id])))
 
+(declare parse-class-statement)
+
+(defn parse-class-block
+  "Parse a class body block of statements until 'end' keyword."
+  [state]
+  (let [[new-ast block-id] (create-node (:ast state) :block :statements [])
+        initial-state (skip-separators (assoc state :ast new-ast))]
+    (loop [current-state initial-state
+           statements []]
+      (let [token (current-token current-state)]
+        (cond
+          (nil? token)
+          (throw (ex-info "Expected 'end' to close block" {}))
+
+          (match-token? current-state :keyword "end")
+          (let [new-ast (set-component (:ast current-state) block-id :statements statements)]
+            [(assoc current-state :ast new-ast) block-id])
+
+          (match-token? current-state :keyword "else")
+          (let [new-ast (set-component (:ast current-state) block-id :statements statements)]
+            [(assoc current-state :ast new-ast) block-id])
+
+          (or (match-token? current-state :newline)
+              (match-token? current-state :operator ";"))
+          (recur (second (consume-token current-state)) statements)
+
+          :else
+          (let [[state-after-stmt stmt-id] (parse-class-statement current-state)
+                state-after-newlines (skip-separators state-after-stmt)]
+            (recur state-after-newlines (conj statements stmt-id))))))))
+
 (defn parse-class-definition
   "Parse a class definition (class ClassName < ParentClass ... end)."
   [state]
@@ -879,7 +912,7 @@
             [state-after-name nil])
 
           state-skip-newlines (skip-separators state-after-inheritance)
-          [state-after-body body-id] (parse-block state-skip-newlines)
+          [state-after-body body-id] (parse-class-block state-skip-newlines)
           [_ final-state] (expect-token state-after-body :keyword "end")
           [new-ast entity-id] (create-node (:ast final-state) :class-definition
                                          :name (:value class-token)
@@ -968,6 +1001,33 @@
                                                    :position {:line (:line id-token) :column (:column id-token)})]
               [(assoc state-after-value :ast new-ast) entity-id])))))))
 
+(defn parse-method-assignment-statement
+  "Parse a method assignment statement (obj.method = expression)."
+  [state]
+  (when (match-token? state :identifier)
+    (let [lookahead-state (update state :pos inc)]
+      (when (and (match-token? lookahead-state :operator ".")
+                 (let [after-dot (update lookahead-state :pos inc)]
+                   (and (match-token? after-dot :identifier)
+                        (match-token? (update after-dot :pos inc) :operator "="))))
+        ;; Parse: identifier.method = value
+        (let [[receiver-token state-after-receiver] (consume-token state)
+              [_ state-after-dot] (consume-token state-after-receiver)
+              [method-token state-after-method] (consume-token state-after-dot)
+              [_ state-after-assign] (consume-token state-after-method)
+              [state-after-value value-id] (parse-expression state-after-assign)
+              ;; Create receiver identifier node
+              [ast-with-receiver receiver-id] (create-node (:ast state-after-value) :identifier
+                                                          :value (:value receiver-token)
+                                                          :position {:line (:line receiver-token) :column (:column receiver-token)})
+              ;; Create method call for setter (method_name=)
+              [new-ast entity-id] (create-node ast-with-receiver :method-call
+                                             :receiver receiver-id
+                                             :method (str (:value method-token) "=")
+                                             :arguments [value-id]
+                                             :position {:line (:line method-token) :column (:column method-token)})]
+          [(assoc state-after-value :ast new-ast) entity-id])))))
+
 (defn parse-assignment-statement
   "Parse an assignment statement (identifier = expression)."
   [state]
@@ -1010,6 +1070,67 @@
                                            :position {:line (:line var-token) :column (:column var-token)})]
         [(assoc state-after-value :ast new-ast) entity-id]))))
 
+(defn parse-attr-accessor-list
+  "Parse a comma-separated list of attribute symbols."
+  [state]
+  (loop [current-state state
+         attributes []
+         expecting-symbol true]
+    (let [current-token (current-token current-state)]
+      (cond
+        ;; Found symbol when expecting one
+        (and expecting-symbol current-token (= (:type current-token) :symbol))
+        (let [[symbol-token next-state] (consume-token current-state)]
+          (recur next-state (conj attributes (:value symbol-token)) false))
+
+        ;; Found comma when not expecting symbol  
+        (and (not expecting-symbol) (match-token? current-state :operator ","))
+        (let [[_ next-state] (consume-token current-state)]
+          (recur next-state attributes true))
+
+        ;; End condition: no more symbols/commas or newline
+        :else
+        [current-state attributes]))))
+
+(defn parse-attr-accessor-statement
+  "Parse an attr_accessor statement (attr_accessor :value, :left, :right)."
+  [state]
+  (when (match-token? state :keyword "attr_accessor")
+    (let [[attr-token state-after-attr] (consume-token state)
+          [state-after-attrs attributes] (parse-attr-accessor-list state-after-attr)
+          [new-ast entity-id] (create-node (:ast state-after-attrs) :attr-accessor-statement
+                                         :attributes attributes
+                                         :position {:line (:line attr-token) :column (:column attr-token)})]
+      [(assoc state-after-attrs :ast new-ast) entity-id])))
+
+(defn parse-attr-reader-statement
+  "Parse an attr_reader statement (attr_reader :value, :left)."
+  [state]
+  (when (match-token? state :keyword "attr_reader")
+    (let [[attr-token state-after-attr] (consume-token state)
+          [state-after-attrs attributes] (parse-attr-accessor-list state-after-attr)
+          [new-ast entity-id] (create-node (:ast state-after-attrs) :attr-reader-statement
+                                         :attributes attributes
+                                         :position {:line (:line attr-token) :column (:column attr-token)})]
+      [(assoc state-after-attrs :ast new-ast) entity-id])))
+
+(defn parse-attr-writer-statement
+  "Parse an attr_writer statement (attr_writer :value, :left)."
+  [state]
+  (when (match-token? state :keyword "attr_writer")
+    (let [[attr-token state-after-attr] (consume-token state)
+          [state-after-attrs attributes] (parse-attr-accessor-list state-after-attr)
+          [new-ast entity-id] (create-node (:ast state-after-attrs) :attr-writer-statement
+                                         :attributes attributes
+                                         :position {:line (:line attr-token) :column (:column attr-token)})]
+      [(assoc state-after-attrs :ast new-ast) entity-id])))
+
+(defn parse-class-statement
+  "Parse a statement that can appear in class body (includes attr statements)."
+  [state]
+  (parse-statement state))
+
+
 (defn parse-statement
   "Parse a statement (expression or control flow)."
   [state]
@@ -1028,6 +1149,7 @@
       (parse-instance-variable-assignment state)
       (parse-class-variable-assignment state)
       (parse-indexed-assignment-statement state)
+      (parse-method-assignment-statement state)
       (parse-assignment-statement state)
       (parse-expression state)))
 
@@ -1273,14 +1395,10 @@
              statements []]
         (let [current-state (skip-separators current-state)]
           (if (nil? (current-token current-state))
-            ;; End of input
-            (if (= 1 (count statements))
-              ;; Single statement, return as-is
-              (:ast current-state)
-              ;; Multiple statements, wrap in a program block
-              (let [[new-ast] (create-node (:ast current-state) :program
-                                                     :statements statements)]
-                new-ast))
+            ;; End of input - always create a program node
+            (let [[new-ast] (create-node (:ast current-state) :program
+                                                   :statements statements)]
+              new-ast)
             ;; Parse next statement
             (let [[state-after-stmt stmt-id] (parse-statement current-state)
                   new-statements (conj statements stmt-id)]

@@ -8,9 +8,12 @@
   "Internal evaluation function for Ruby source code."
   [source]
   (try
-    (let [ast (p/parse (t/tokenize source))
+    ;; Preprocess attr_accessor statements
+    (let [attr-info (i/preprocess-attr-statements source)
+          clean-source (i/remove-attr-statements source)
+          ast (p/parse (t/tokenize clean-source))
           root-entity (p/find-root-entity ast)]
-      (i/evaluate-directly ast root-entity)
+      (i/evaluate-directly ast root-entity {:attr-info attr-info})
       0)
     (catch clojure.lang.ExceptionInfo e
       1)))
@@ -31,9 +34,13 @@
    (eval-string source {}))
   ([source opts]
    (try
-     (let [ast (p/parse (t/tokenize source))
-           root-entity (p/find-root-entity ast)]
-       (i/evaluate-directly ast root-entity opts))
+     ;; Preprocess attr_accessor statements
+     (let [attr-info (i/preprocess-attr-statements source)
+           clean-source (i/remove-attr-statements source)
+           ast (p/parse (t/tokenize clean-source))
+           root-entity (p/find-root-entity ast)
+           combined-opts (assoc opts :attr-info attr-info)]
+       (i/evaluate-directly ast root-entity combined-opts))
      (catch clojure.lang.ExceptionInfo e
        (throw (ex-info (str "Ruby evaluation error: " (.getMessage e))
                        {:source source

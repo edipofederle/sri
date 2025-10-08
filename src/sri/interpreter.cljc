@@ -24,7 +24,7 @@
                         ;; Text part - return as is
                         (string? part)
                         part
-                        
+
                         ;; Expression part - parse and evaluate
                         (and (map? part) (:source part))
                         (let [expr-source (:source part)
@@ -32,7 +32,7 @@
                               temp-state (parser/create-parse-state expr-tokens)
                               [final-state expr-id] (parser/parse-expression temp-state)]
                           (str (interpret-expression (:ast final-state) expr-id variables)))
-                        
+
                         ;; Unknown part type
                         :else
                         (str "UNKNOWN: " part)))
@@ -305,8 +305,22 @@
             (doseq [[param arg] (map vector method-params args)]
               (swap! method-vars assoc param arg)))
 
-          ;; Execute method body with return handling
-          (let [result (if method-body
+          ;; Execute method body with return handling, or handle special generated methods
+          (let [result (cond
+                        ;; Handle attr getter methods
+                        (:attr-getter method-info)
+                        (let [attr-var-name (str "@" (:attr-name method-info))]
+                          (get @(:instance-variables instance) attr-var-name))
+
+                        ;; Handle attr setter methods
+                        (:attr-setter method-info)
+                        (let [attr-var-name (str "@" (:attr-name method-info))
+                              value (first args)]
+                          (swap! (:instance-variables instance) assoc attr-var-name value)
+                          value)
+
+                        ;; Handle normal method body
+                        method-body
                         (try
                           (interpret-expression method-ast method-body method-vars)
                           (catch clojure.lang.ExceptionInfo e
@@ -314,7 +328,9 @@
                               (if (= (:type ex-data) :return)
                                 (:value ex-data)
                                 (throw e)))))
-                        nil)]
+
+                        ;; No method body
+                        :else nil)]
             result))
         ::method-not-found))
     ::method-not-found))
@@ -773,22 +789,73 @@
     (throw (ex-info "return" {:type :return :value return-value}))))
 
 
+
+(defn preprocess-attr-statements
+  "Extract attr_accessor info from raw source before parsing and organize by class."
+  [source]
+  (let [lines (clojure.string/split-lines source)
+        current-class (atom nil)
+        class-attrs (atom {})]
+    ;; Find class definitions and their attr statements
+    (doseq [line lines]
+      (let [trimmed (clojure.string/trim line)]
+        (cond
+          ;; Detect class definition
+          (clojure.string/starts-with? trimmed "class ")
+          (let [class-name (second (clojure.string/split trimmed #"\s+"))]
+            (reset! current-class class-name))
+          
+          ;; Detect attr statements within the class
+          (and @current-class
+               (or (clojure.string/starts-with? trimmed "attr_accessor")
+                   (clojure.string/starts-with? trimmed "attr_reader")
+                   (clojure.string/starts-with? trimmed "attr_writer")))
+          (let [attr-type (cond
+                           (clojure.string/starts-with? trimmed "attr_accessor") :accessor
+                           (clojure.string/starts-with? trimmed "attr_reader") :reader
+                           (clojure.string/starts-with? trimmed "attr_writer") :writer)
+                attrs-part (clojure.string/replace trimmed #"attr_\w+\s+" "")
+                attrs (-> attrs-part
+                         (clojure.string/replace #":" "")
+                         (clojure.string/replace #"\s+" "")
+                         (clojure.string/split #","))]
+            (doseq [attr attrs]
+              (when (seq attr)
+                (swap! class-attrs update @current-class
+                       (fn [existing]
+                         (conj (or existing [])
+                               {:name attr :type attr-type})))))))))
+    @class-attrs))
+
+(defn remove-attr-statements
+  "Remove attr_accessor lines from source code."
+  [source]
+  (->> (clojure.string/split-lines source)
+       (remove #(let [trimmed (clojure.string/trim %)]
+                  (or (clojure.string/starts-with? trimmed "attr_accessor")
+                      (clojure.string/starts-with? trimmed "attr_reader")
+                      (clojure.string/starts-with? trimmed "attr_writer"))))
+       (clojure.string/join "\n")))
+
 (defn interpret-class-definition
   "Interpret a class definition - stores class info in variables for later instantiation."
-  [ast entity-id variables]
-  (let [class-name (parser/get-component ast entity-id :name)
-        parent-class (parser/get-component ast entity-id :parent-class)
-        body-id (parser/get-component ast entity-id :body)]
+  ([ast entity-id variables]
+   (interpret-class-definition ast entity-id variables {}))
+  ([ast entity-id variables opts]
+   (let [class-name (parser/get-component ast entity-id :name)
+         parent-class (parser/get-component ast entity-id :parent-class)
+         body-id (parser/get-component ast entity-id :body)
+         attr-info (get opts :attr-info {})]
 
-    ;; Create class object with instance methods and class methods
-    (let [class-methods (atom {})
-          class-class-methods (atom {})
-          class-info {:name class-name
-                      :parent-class parent-class
-                      :methods class-methods
-                      :class-methods class-class-methods
-                      :ast ast
-                      :body-id body-id}]
+     ;; Create class object with instance methods and class methods
+     (let [class-methods (atom {})
+           class-class-methods (atom {})
+           class-info {:name class-name
+                       :parent-class parent-class
+                       :methods class-methods
+                       :class-methods class-class-methods
+                       :ast ast
+                       :body-id body-id}]
 
       ;; Process class body to extract method definitions
       (when body-id
@@ -816,15 +883,43 @@
                          {:name method-name
                           :parameters method-params
                           :body method-body
-                          :ast ast})))))))
+                          :ast ast}))
 
-      ;; Store class in variables with "class:" prefix
-      (swap! variables assoc (str "class:" class-name) class-info)
+                ;; Skip attr statements entirely for now
+                (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
+                nil ; Do nothing - just skip them
+                
+                ;; Skip any other statements during class definition
+                :else
+                nil))) ; Skip all other statement types during class definition
 
-      ;; Also make class name available for Class.new syntax
-      (swap! variables assoc class-name class-info)
+       ;; Generate methods from preprocessed attr info
+       (when-let [class-attrs (get attr-info class-name)]
+         (doseq [attr class-attrs]
+           (let [attr-name (:name attr)
+                 attr-type (:type attr)]
+             ;; Generate getter method
+             (when (or (= attr-type :accessor) (= attr-type :reader))
+               (swap! class-methods assoc attr-name
+                      {:name attr-name
+                       :parameters []
+                       :attr-getter true
+                       :attr-name attr-name}))
+             ;; Generate setter method
+             (when (or (= attr-type :accessor) (= attr-type :writer))
+               (swap! class-methods assoc (str attr-name "=")
+                      {:name (str attr-name "=")
+                       :parameters ["value"]
+                       :attr-setter true
+                       :attr-name attr-name})))))
 
-      nil))) ; Class definitions return nil
+       ;; Store class in variables with "class:" prefix
+       (swap! variables assoc (str "class:" class-name) class-info)
+
+       ;; Also make class name available for Class.new syntax
+       (swap! variables assoc class-name class-info)
+
+       nil))))))
 
 (defn interpret-instance-variable-access
   "Interpret instance variable access (@var)."
@@ -907,6 +1002,58 @@
        :next-statement (interpret-next-statement ast entity-id variables)
        :return-statement (interpret-return-statement ast entity-id variables)
        :block (interpret-block ast entity-id variables)
+       :attr-accessor-statement nil ; These are handled during class definition
+       :attr-reader-statement nil   ; These are handled during class definition
+       :attr-writer-statement nil   ; These are handled during class definition
+
+       ;; For unknown node types, try to get the value
+       (parser/get-value ast entity-id)))))
+
+(defn interpret-expression-with-opts
+  "Main expression interpreter dispatcher with options support."
+  ([ast entity-id opts]
+   (interpret-expression-with-opts ast entity-id (atom {}) opts))
+  ([ast entity-id variables opts]
+   (let [node-type (parser/get-node-type ast entity-id)]
+     (case node-type
+       :integer-literal (interpret-literal ast entity-id)
+       :string-literal (interpret-literal ast entity-id)
+       :interpolated-string (interpret-interpolated-string ast entity-id variables)
+       :boolean-literal (interpret-literal ast entity-id)
+       :nil-literal (interpret-literal ast entity-id)
+       :symbol-literal (interpret-literal ast entity-id)
+       :array-literal (interpret-array-literal ast entity-id variables)
+       :hash-literal (interpret-hash-literal ast entity-id variables)
+       :binary-operation (interpret-binary-operation ast entity-id variables)
+       :unary-operation (interpret-unary-operation ast entity-id variables)
+       :method-call (interpret-method-call ast entity-id variables)
+       :identifier (interpret-identifier ast entity-id variables)
+       :assignment-statement (interpret-assignment ast entity-id variables)
+       :array-access (interpret-array-access ast entity-id variables)
+       :array-assignment (interpret-array-assignment ast entity-id variables)
+       :indexed-assignment-statement (interpret-indexed-assignment ast entity-id variables)
+       :instance-variable-access (interpret-instance-variable-access ast entity-id variables)
+       :instance-variable-assignment (interpret-instance-variable-assignment ast entity-id variables)
+       :method-definition (interpret-method-definition ast entity-id variables)
+       :class-definition (interpret-class-definition ast entity-id variables opts)
+       :if-statement (interpret-if-statement ast entity-id variables)
+       :while-statement (interpret-while-statement ast entity-id variables)
+       :for-statement (interpret-for-statement ast entity-id variables)
+       :until-statement (interpret-until-statement ast entity-id variables)
+       :loop-statement (interpret-loop-statement ast entity-id variables)
+       :case-statement (let [result (interpret-case-statement ast entity-id variables)]
+                         (when (= "true" (System/getenv "RUBY_VERBOSE"))
+                           (println "DEBUG: Case statement returned:" result))
+                         result)
+       :when-clause nil  ; When clauses are handled by case statements, not directly
+       :break-statement (interpret-break-statement ast entity-id variables)
+       :continue-statement (interpret-continue-statement ast entity-id variables)
+       :next-statement (interpret-next-statement ast entity-id variables)
+       :return-statement (interpret-return-statement ast entity-id variables)
+       :block (interpret-block ast entity-id variables)
+       :attr-accessor-statement nil ; These are handled during class definition
+       :attr-reader-statement nil   ; These are handled during class definition
+       :attr-writer-statement nil   ; These are handled during class definition
 
        ;; For unknown node types, try to get the value
        (parser/get-value ast entity-id)))))
@@ -927,14 +1074,15 @@
    (let [builtin-vars (create-builtin-classes)
          custom-vars (get opts :namespaces {})
          initial-vars (merge builtin-vars custom-vars)
-         variables (atom initial-vars)]
-     (if (= :program (parser/get-node-type ast root-entity-id))
+         variables (atom initial-vars)
+         root-type (parser/get-node-type ast root-entity-id)]
+     (if (= :program root-type)
        ;; Handle program with multiple statements
-       (let [statement-ids (parser/get-children ast root-entity-id)
-             results (map #(interpret-expression ast % variables) statement-ids)]
-         (last results)) ; Return the last expression result
+       (let [statement-ids (parser/get-children ast root-entity-id)]
+         (let [results (map #(interpret-expression-with-opts ast % variables opts) statement-ids)]
+           (last results))) ; Return the last expression result
        ;; Handle single expression
-       (interpret-expression ast root-entity-id variables)))))
+       (interpret-expression-with-opts ast root-entity-id variables opts)))))
 
 (defn evaluate-directly
   "Main entry point for direct AST interpretation."

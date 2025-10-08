@@ -46,6 +46,10 @@
       (is (= :boolean-literal (parser/get-component ast-false root-false :node-type)))
       (is (= false (parser/get-component ast-false root-false :value))))))
 
+; NOTE: attr_accessor, attr_reader, and attr_writer statements are now handled
+; in preprocessing phase (see interpreter.cljc preprocess-attr-statements)
+; These are no longer parsed as AST nodes, so parser tests are not needed.
+
 (deftest test-symbol-literal
   (testing "Parse symbol literal"
     (let [[ast root-id] (parse-string ":hello")]
