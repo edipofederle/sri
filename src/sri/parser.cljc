@@ -1150,6 +1150,9 @@
       (parse-class-variable-assignment state)
       (parse-indexed-assignment-statement state)
       (parse-method-assignment-statement state)
+      (parse-attr-accessor-statement state)
+      (parse-attr-reader-statement state)
+      (parse-attr-writer-statement state)
       (parse-assignment-statement state)
       (parse-expression state)))
 

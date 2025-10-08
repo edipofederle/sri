@@ -790,52 +790,6 @@
 
 
 
-(defn preprocess-attr-statements
-  "Extract attr_accessor info from raw source before parsing and organize by class."
-  [source]
-  (let [lines (clojure.string/split-lines source)
-        current-class (atom nil)
-        class-attrs (atom {})]
-    ;; Find class definitions and their attr statements
-    (doseq [line lines]
-      (let [trimmed (clojure.string/trim line)]
-        (cond
-          ;; Detect class definition
-          (clojure.string/starts-with? trimmed "class ")
-          (let [class-name (second (clojure.string/split trimmed #"\s+"))]
-            (reset! current-class class-name))
-          
-          ;; Detect attr statements within the class
-          (and @current-class
-               (or (clojure.string/starts-with? trimmed "attr_accessor")
-                   (clojure.string/starts-with? trimmed "attr_reader")
-                   (clojure.string/starts-with? trimmed "attr_writer")))
-          (let [attr-type (cond
-                           (clojure.string/starts-with? trimmed "attr_accessor") :accessor
-                           (clojure.string/starts-with? trimmed "attr_reader") :reader
-                           (clojure.string/starts-with? trimmed "attr_writer") :writer)
-                attrs-part (clojure.string/replace trimmed #"attr_\w+\s+" "")
-                attrs (-> attrs-part
-                         (clojure.string/replace #":" "")
-                         (clojure.string/replace #"\s+" "")
-                         (clojure.string/split #","))]
-            (doseq [attr attrs]
-              (when (seq attr)
-                (swap! class-attrs update @current-class
-                       (fn [existing]
-                         (conj (or existing [])
-                               {:name attr :type attr-type})))))))))
-    @class-attrs))
-
-(defn remove-attr-statements
-  "Remove attr_accessor lines from source code."
-  [source]
-  (->> (clojure.string/split-lines source)
-       (remove #(let [trimmed (clojure.string/trim %)]
-                  (or (clojure.string/starts-with? trimmed "attr_accessor")
-                      (clojure.string/starts-with? trimmed "attr_reader")
-                      (clojure.string/starts-with? trimmed "attr_writer"))))
-       (clojure.string/join "\n")))
 
 (defn interpret-class-definition
   "Interpret a class definition - stores class info in variables for later instantiation."
@@ -844,8 +798,7 @@
   ([ast entity-id variables opts]
    (let [class-name (parser/get-component ast entity-id :name)
          parent-class (parser/get-component ast entity-id :parent-class)
-         body-id (parser/get-component ast entity-id :body)
-         attr-info (get opts :attr-info {})]
+         body-id (parser/get-component ast entity-id :body)]
 
      ;; Create class object with instance methods and class methods
      (let [class-methods (atom {})
@@ -885,33 +838,47 @@
                           :body method-body
                           :ast ast}))
 
-                ;; Skip attr statements entirely for now
-                (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
-                nil ; Do nothing - just skip them
+                ;; Handle attr statements - generate getter/setter methods
+                (= method-type :attr-accessor-statement)
+                (let [attributes (parser/get-component ast method-id :attributes)]
+                  (doseq [attr-name attributes]
+                    ;; Generate getter method
+                    (swap! class-methods assoc attr-name
+                           {:name attr-name
+                            :parameters []
+                            :attr-getter true
+                            :attr-name attr-name})
+                    ;; Generate setter method
+                    (swap! class-methods assoc (str attr-name "=")
+                           {:name (str attr-name "=")
+                            :parameters ["value"]
+                            :attr-setter true
+                            :attr-name attr-name})))
+
+                (= method-type :attr-reader-statement)
+                (let [attributes (parser/get-component ast method-id :attributes)]
+                  (doseq [attr-name attributes]
+                    ;; Generate only getter method
+                    (swap! class-methods assoc attr-name
+                           {:name attr-name
+                            :parameters []
+                            :attr-getter true
+                            :attr-name attr-name})))
+
+                (= method-type :attr-writer-statement)
+                (let [attributes (parser/get-component ast method-id :attributes)]
+                  (doseq [attr-name attributes]
+                    ;; Generate only setter method
+                    (swap! class-methods assoc (str attr-name "=")
+                           {:name (str attr-name "=")
+                            :parameters ["value"]
+                            :attr-setter true
+                            :attr-name attr-name})))
                 
                 ;; Skip any other statements during class definition
                 :else
                 nil))) ; Skip all other statement types during class definition
 
-       ;; Generate methods from preprocessed attr info
-       (when-let [class-attrs (get attr-info class-name)]
-         (doseq [attr class-attrs]
-           (let [attr-name (:name attr)
-                 attr-type (:type attr)]
-             ;; Generate getter method
-             (when (or (= attr-type :accessor) (= attr-type :reader))
-               (swap! class-methods assoc attr-name
-                      {:name attr-name
-                       :parameters []
-                       :attr-getter true
-                       :attr-name attr-name}))
-             ;; Generate setter method
-             (when (or (= attr-type :accessor) (= attr-type :writer))
-               (swap! class-methods assoc (str attr-name "=")
-                      {:name (str attr-name "=")
-                       :parameters ["value"]
-                       :attr-setter true
-                       :attr-name attr-name})))))
 
        ;; Store class in variables with "class:" prefix
        (swap! variables assoc (str "class:" class-name) class-info)

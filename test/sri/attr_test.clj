@@ -1,72 +1,49 @@
 (ns sri.attr-test
   (:require [clojure.test :refer :all]
-            [sri.interpreter :as interpreter]
+            [sri.parser :as parser]
+            [sri.tokenizer :as tokenizer]
             [sri.core :as core]))
 
-(deftest test-preprocess-attr-statements
-  (testing "Preprocess attr_accessor statements"
-    (let [source "class Test\n  attr_accessor :value, :left\n  def initialize(v)\n    @value = v\n  end\nend"
-          result (interpreter/preprocess-attr-statements source)]
-      (is (contains? result "Test"))
-      (is (= 2 (count (get result "Test"))))
-      (let [attrs (get result "Test")]
-        (is (= "value" (:name (first attrs))))
-        (is (= :accessor (:type (first attrs))))
-        (is (= "left" (:name (second attrs))))
-        (is (= :accessor (:type (second attrs)))))))
+(defn parse-statement-string [source]
+  "Helper function to parse a source string and return AST and root entity."
+  (let [ast (parser/parse (tokenizer/tokenize source))
+        root-entity (parser/find-root-entity ast)]
+    [ast root-entity]))
 
-  (testing "Preprocess attr_reader statements"
-    (let [source "class Test\n  attr_reader :height\nend"
-          result (interpreter/preprocess-attr-statements source)]
-      (is (contains? result "Test"))
-      (let [attrs (get result "Test")]
-        (is (= 1 (count attrs)))
-        (is (= "height" (:name (first attrs))))
-        (is (= :reader (:type (first attrs)))))))
+(deftest test-attr-statement-parsing
+  (testing "Parse attr_accessor statement"
+    (let [[ast root-id] (parse-statement-string "attr_accessor :value, :left, :right")
+          [program-ast program-root] (parse-statement-string "class Test\n  attr_accessor :value, :left\nend")
+          class-children (parser/get-children program-ast program-root)
+          class-id (first class-children)
+          class-body-id (parser/get-component program-ast class-id :body)
+          attr-statements (parser/get-children program-ast class-body-id)
+          attr-id (first attr-statements)]
+      (is (= :attr-accessor-statement (parser/get-component program-ast attr-id :node-type)))
+      (let [attributes (parser/get-component program-ast attr-id :attributes)]
+        (is (= ["value" "left"] attributes)))))
 
-  (testing "Preprocess attr_writer statements"
-    (let [source "class Test\n  attr_writer :data\nend"
-          result (interpreter/preprocess-attr-statements source)]
-      (is (contains? result "Test"))
-      (let [attrs (get result "Test")]
-        (is (= 1 (count attrs)))
-        (is (= "data" (:name (first attrs))))
-        (is (= :writer (:type (first attrs)))))))
+  (testing "Parse attr_reader statement"
+    (let [[ast root-id] (parse-statement-string "class Test\n  attr_reader :height\nend")
+          class-children (parser/get-children ast root-id)
+          class-id (first class-children)
+          class-body-id (parser/get-component ast class-id :body)
+          attr-statements (parser/get-children ast class-body-id)
+          attr-id (first attr-statements)]
+      (is (= :attr-reader-statement (parser/get-component ast attr-id :node-type)))
+      (let [attributes (parser/get-component ast attr-id :attributes)]
+        (is (= ["height"] attributes)))))
 
-  (testing "Multiple classes with different attr types"
-    (let [source "class A\n  attr_accessor :x\nend\nclass B\n  attr_reader :y\nend"
-          result (interpreter/preprocess-attr-statements source)]
-      (is (contains? result "A"))
-      (is (contains? result "B"))
-      (is (= :accessor (:type (first (get result "A")))))
-      (is (= :reader (:type (first (get result "B")))))))
-
-  (testing "Empty source"
-    (let [result (interpreter/preprocess-attr-statements "")]
-      (is (empty? result))))
-
-  (testing "No attr statements"
-    (let [source "class Test\n  def initialize\n  end\nend"
-          result (interpreter/preprocess-attr-statements source)]
-      (is (empty? result)))))
-
-(deftest test-remove-attr-statements
-  (testing "Remove attr_accessor statements"
-    (let [source "class Test\n  attr_accessor :value\n  def initialize(v)\n    @value = v\n  end\nend"
-          result (interpreter/remove-attr-statements source)
-          expected "class Test\n  def initialize(v)\n    @value = v\n  end\nend"]
-      (is (= expected result))))
-
-  (testing "Remove multiple attr statements"
-    (let [source "class Test\n  attr_reader :x\n  attr_writer :y\n  attr_accessor :z\n  def test\n  end\nend"
-          result (interpreter/remove-attr-statements source)
-          expected "class Test\n  def test\n  end\nend"]
-      (is (= expected result))))
-
-  (testing "No attr statements to remove"
-    (let [source "class Test\n  def initialize\n  end\nend"
-          result (interpreter/remove-attr-statements source)]
-      (is (= source result)))))
+  (testing "Parse attr_writer statement"
+    (let [[ast root-id] (parse-statement-string "class Test\n  attr_writer :data\nend")
+          class-children (parser/get-children ast root-id)
+          class-id (first class-children)
+          class-body-id (parser/get-component ast class-id :body)
+          attr-statements (parser/get-children ast class-body-id)
+          attr-id (first attr-statements)]
+      (is (= :attr-writer-statement (parser/get-component ast attr-id :node-type)))
+      (let [attributes (parser/get-component ast attr-id :attributes)]
+        (is (= ["data"] attributes))))))
 
 (deftest test-attr-integration
   (testing "Full attr_accessor integration"
