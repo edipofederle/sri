@@ -18,6 +18,8 @@
    ">" :greater-than
    ">=" :greater-equal
    "=" :assign
+   "..." :exclusive-range
+   ".." :inclusive-range
    "." :dot
    "(" :left-paren
    ")" :right-paren
@@ -350,6 +352,21 @@
             [(create-token :symbol (:value identifier-token) start-line start-column) state2])
           ;; Just a colon operator (for hash syntax)
           [(create-token :operator ":" start-line start-column) state1]))
+
+      (= ch \.)
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (= next-ch \.)
+          (let [[_ state2] (next-char state1)
+                third-ch (peek-char state2)]
+            (if (= third-ch \.)
+              ;; Exclusive range ...
+              (let [[_ state3] (next-char state2)]
+                [(create-token :operator "..." start-line start-column) state3])
+              ;; Inclusive range ..
+              [(create-token :operator ".." start-line start-column) state2]))
+          ;; Just a dot operator
+          [(create-token :operator "." start-line start-column) state1]))
 
       :else
       (let [op-str (str ch)]

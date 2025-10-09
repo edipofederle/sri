@@ -33,6 +33,8 @@ BENCHMARKS=(
     "method_call_benchmark.rb"
     "class_benchmark.rb"
     "control_flow_benchmark.rb"
+    "range_benchmark.rb"
+    "char_range_benchmark.rb"
 )
 
 # Function to get the appropriate command for execution mode

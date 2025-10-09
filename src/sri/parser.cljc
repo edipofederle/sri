@@ -541,6 +541,7 @@
    Higher numbers = higher precedence."
   {"or" 1
    "and" 2
+   ".." 2.5 "..." 2.5
    "==" 3 "!=" 3
    "<" 4 "<=" 4 ">" 4 ">=" 4
    "+" 5 "-" 5

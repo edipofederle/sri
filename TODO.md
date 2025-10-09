@@ -23,12 +23,13 @@ This document tracks Ruby features to be implemented in the Sri interpreter, org
 - **Status**: All loop types (for, until, while, loop do...end) with break/next implemented and working
 
 ### Ranges
-- [ ] `1..10` (inclusive) and `1...10` (exclusive) literals
-- [ ] Range methods: `.each`, `.to_a`, `.include?`
-- [ ] Range in case statements (when 1..5)
-- [ ] Character ranges `'a'..'z'`
+- [x] `1..10` (inclusive) and `1...10` (exclusive) literals
+- [x] Range methods: `.each`, `.to_a`, `.include?`
+- [x] Range in case statements (when 1..5)
+- [x] Character ranges `"a".."z"`
 - **Impact**: High - Used everywhere in Ruby
 - **Complexity**: Medium - New literal type + methods
+- **Status**: Integer and character ranges with core methods (.to_a, .include?, .size, .count, .to_s) and case statement support implemented and working
 
 ### Exception Handling
 - [ ] `begin/rescue/ensure/end` blocks
@@ -233,12 +234,12 @@ puts(hash.length) # Needs testing
 ## Implementation Notes
 
 ### Quick Wins (Good Starting Points)
-1. **`.to_s` method**  - High impact, low complexity - COMPLETED
+1. **`.to_s` method** ✅ - High impact, low complexity - COMPLETED
 2. **`self` method calls** - High impact, medium complexity
-3. **String Interpolation**  - High impact, manageable complexity - COMPLETED
-4. **Ranges** - Fundamental feature, medium complexity
-5. **For/Until Loops**  - Extends existing infrastructure - COMPLETED
-6. **Constants & Symbols**  - Core language features - PARTIALLY COMPLETED (symbols working)
+3. **String Interpolation** ✅ - High impact, manageable complexity - COMPLETED
+4. **Ranges** ✅ - Fundamental feature, medium complexity - COMPLETED
+5. **For/Until Loops** ✅ - Extends existing infrastructure - COMPLETED
+6. **Constants & Symbols** ✅ - Core language features - PARTIALLY COMPLETED (symbols working)
 
 ### Major Undertakings
 1. **Exception Handling** - Critical but complex
