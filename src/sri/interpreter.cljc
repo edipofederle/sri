@@ -1,7 +1,8 @@
 (ns sri.interpreter
   "Direct AST interpreter for Ruby"
   (:require [sri.parser :as parser]
-            [clojure.string]))
+            [clojure.string]
+            [sri.enumerable :as enum]))
 
 ;; Range data structure
 (defrecord Range [start end inclusive?])
@@ -371,60 +372,20 @@
     ::method-not-found))
 
 (defn try-block-method
-  "Try to execute a block-based method like each, map, select, etc."
+  "Try to execute a block-based method like each, map, select, etc using Enumerable."
   [receiver method-name ast entity-id variables]
-  (when (or (vector? receiver) (ruby-range? receiver))
+  (when (enum/enumerable? receiver)
     (case method-name
-      "each" (let [block-id (parser/get-component ast entity-id :block)]
-               (if block-id
-                 (do
-                   (if (ruby-range? receiver)
-                     ;; Range iteration
-                     (let [{:keys [start end inclusive?]} receiver]
-                       (if (char-range? receiver)
-                         ;; Character range iteration
-                         (let [start-ascii (char-to-int start)
-                               end-ascii (char-to-int end)
-                               limit (if inclusive? (inc end-ascii) end-ascii)]
-                           (doseq [ascii-val (range start-ascii limit)]
-                             (execute-block ast block-id variables [(int-to-char ascii-val)])))
-                         ;; Numeric range iteration  
-                         (let [limit (if inclusive? (inc end) end)]
-                           (doseq [item (range start limit)]
-                             (execute-block ast block-id variables [item])))))
-                     ;; Array iteration
-                     (doseq [item receiver]
-                       (execute-block ast block-id variables [item])))
-                   receiver) ; Return the original receiver
-                 (throw (ex-info "each requires a block" {:receiver receiver}))))
-      "map" (let [block-id (parser/get-component ast entity-id :block)]
-              (if block-id
-                (let [result (vec (map (fn [item]
-                                         (execute-block ast block-id variables [item]))
-                                       receiver))]
-                  (when (= "true" (System/getenv "RUBY_VERBOSE"))
-                    (println "DEBUG: map result:" result))
-                  result)
-                (throw (ex-info "map requires a block" {:receiver receiver}))))
-      "select" (let [block-id (parser/get-component ast entity-id :block)]
-                 (if block-id
-                   (vec (filter (fn [item]
-                                  (execute-block ast block-id variables [item]))
-                                receiver))
-                   (throw (ex-info "select requires a block" {:receiver receiver}))))
-      "reject" (let [block-id (parser/get-component ast entity-id :block)]
-                 (if block-id
-                   (vec (remove (fn [item]
-                                  (execute-block ast block-id variables [item]))
-                                receiver))
-                   (throw (ex-info "reject requires a block" {:receiver receiver}))))
-      "find" (let [block-id (parser/get-component ast entity-id :block)]
-               (if block-id
-                 (some (fn [item]
-                         (when (execute-block ast block-id variables [item])
-                           item))
-                       receiver)
-                 (throw (ex-info "find requires a block" {:receiver receiver}))))
+      "each" (enum/enumerable-each receiver ast entity-id variables execute-block)
+      "map" (enum/enumerable-map receiver ast entity-id variables execute-block)
+      "collect" (enum/enumerable-map receiver ast entity-id variables execute-block) ; alias for map
+      "select" (enum/enumerable-select receiver ast entity-id variables execute-block)
+      "filter" (enum/enumerable-select receiver ast entity-id variables execute-block) ; alias for select
+      "reject" (enum/enumerable-reject receiver ast entity-id variables execute-block)
+      "find" (enum/enumerable-find receiver ast entity-id variables execute-block)
+      "detect" (enum/enumerable-find receiver ast entity-id variables execute-block) ; alias for find
+      "any?" (enum/enumerable-any? receiver ast entity-id variables execute-block)
+      "all?" (enum/enumerable-all? receiver ast entity-id variables execute-block)
       ;; No block method matched
       nil)))
 
@@ -571,15 +532,7 @@
     "id2name" (if (keyword? receiver)
                 (name receiver)         ; Same as to_s for symbols
                 ::method-not-found)
-    ;; Range methods
-    "each" (if (ruby-range? receiver)
-             (let [{:keys [start end inclusive?]} receiver
-                   limit (if inclusive? (inc end) end)]
-               (doseq [i (range start limit)]
-                 ;; For now, just collect values - block iteration will be enhanced later
-                 i)
-               receiver) ; Return the range itself like Ruby
-             ::method-not-found)
+    ;; Range methods (each is handled by enumerable module)
     "to_a" (if (ruby-range? receiver)
              (let [{:keys [start end inclusive?]} receiver]
                (if (char-range? receiver)

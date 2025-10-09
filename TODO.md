@@ -22,14 +22,24 @@ This document tracks Ruby features to be implemented in the Sri interpreter, org
 - **Complexity**: Low-Medium - Extends existing loop infrastructure
 - **Status**: All loop types (for, until, while, loop do...end) with break/next implemented and working
 
-### Ranges
-- [x] `1..10` (inclusive) and `1...10` (exclusive) literals
-- [x] Range methods: `.each`, `.to_a`, `.include?`
-- [x] Range in case statements (when 1..5)
-- [x] Character ranges `"a".."z"`
+### Ranges ✅ COMPLETED
+- [x] `1..10` (inclusive) and `1...10` (exclusive) literals ✅ COMPLETED
+- [x] Range methods: `.each`, `.to_a`, `.include?` ✅ COMPLETED
+- [x] Range in case statements (when 1..5) ✅ COMPLETED
+- [x] Character ranges `"a".."z"` ✅ COMPLETED
 - **Impact**: High - Used everywhere in Ruby
 - **Complexity**: Medium - New literal type + methods
-- **Status**: Integer and character ranges with core methods (.to_a, .include?, .size, .count, .to_s) and case statement support implemented and working
+- **Status**: ✅ Integer and character ranges with core methods (.to_a, .include?, .size, .count, .to_s) and case statement support implemented and working
+
+### Enumerable Module ✅ COMPLETED
+- [x] Enumerable architecture (separate module) ✅ COMPLETED
+- [x] Core methods: `.each`, `.map`/`.collect`, `.select`/`.filter` ✅ COMPLETED
+- [x] Additional methods: `.reject`, `.find`/`.detect`, `.any?`, `.all?` ✅ COMPLETED
+- [x] Works with both Arrays and Ranges ✅ COMPLETED
+- [x] Eliminates code duplication ✅ COMPLETED
+- **Impact**: High - Provides Ruby-like enumerable functionality
+- **Complexity**: Medium - Modular architecture with duck typing
+- **Status**: ✅ Complete enumerable module with Ruby-compatible methods for all collection types
 
 ### Exception Handling
 - [ ] `begin/rescue/ensure/end` blocks
