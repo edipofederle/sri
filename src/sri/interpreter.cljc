@@ -3,7 +3,7 @@
   (:require [sri.parser :as parser]
             [clojure.string]
             [sri.enumerable :as enum]
-            [sri.ruby-classes :as ruby-classes]))
+            [sri.ruby-classes-new :as ruby-classes]))
 
 ;; Range data structure
 (defrecord Range [start end inclusive?])

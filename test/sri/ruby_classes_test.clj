@@ -1,6 +1,6 @@
 (ns sri.ruby-classes-test
   (:require [clojure.test :refer :all]
-            [sri.ruby-classes :as rc]))
+            [sri.ruby-classes-new :as rc]))
 
 (deftest basic-object-test
   (testing "BasicObject creation and basic methods"

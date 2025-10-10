@@ -1,0 +1,88 @@
+(ns sri.ruby-classes-new
+  "Ruby class hierarchy implementation - refactored with separate files for each type.
+   
+   This is the main interface that brings together all Ruby classes and provides
+   the same API as the original ruby-classes namespace."
+  (:require [sri.ruby-protocols :as protocols]
+            [sri.ruby-method-registry :as registry]
+            [sri.ruby-basic-object :as basic-obj]
+            [sri.ruby-object :as ruby-obj]
+            [sri.ruby-string :as ruby-str]))
+
+;; =============================================================================
+;; Re-export Constructor Functions
+;; =============================================================================
+
+;; BasicObject
+(def create-basic-object basic-obj/create-basic-object)
+
+;; Object 
+(def create-object ruby-obj/create-object)
+(def ruby-nil ruby-obj/ruby-nil)
+(def ruby-true ruby-obj/ruby-true)
+(def ruby-false ruby-obj/ruby-false)
+
+;; String
+(def create-string ruby-str/create-string)
+
+;; =============================================================================
+;; Re-export Record Constructors
+;; =============================================================================
+
+(def ->BasicObject basic-obj/->BasicObject)
+(def ->RubyObjectClass ruby-obj/->RubyObjectClass)
+(def ->RubyString ruby-str/->RubyString)
+
+;; =============================================================================
+;; Method Call Interface
+;; =============================================================================
+
+(defn invoke-ruby-method
+  "Main interface for calling Ruby methods on objects."
+  [obj method-name & args]
+  (cond
+    (satisfies? protocols/RubyObject obj)
+    (apply registry/call-ruby-method obj method-name args)
+
+    ;; Fallback for non-Ruby objects (backward compatibility)
+    :else
+    (throw (ex-info (str "Cannot call method " method-name " on non-Ruby object")
+                    {:object obj :method method-name :args args}))))
+
+;; =============================================================================
+;; Re-export Protocol Functions
+;; =============================================================================
+
+(def ruby-class protocols/ruby-class)
+(def ruby-ancestors protocols/ruby-ancestors)
+(def respond-to? protocols/respond-to?)
+(def to-s protocols/to-s)
+(def inspect protocols/inspect)
+(def ruby-eq protocols/ruby-eq)
+(def ruby-compare protocols/ruby-compare)
+
+;; =============================================================================
+;; Re-export Protocols  
+;; =============================================================================
+
+(def RubyObject protocols/RubyObject)
+(def RubyInspectable protocols/RubyInspectable)
+(def RubyComparable protocols/RubyComparable)
+
+;; =============================================================================
+;; Re-export Method Registry Functions
+;; =============================================================================
+
+(def has-method? registry/has-method?)
+(def method-lookup registry/method-lookup)
+(def call-ruby-method registry/call-ruby-method)
+(def register-method registry/register-method)
+(def get-ruby-method-impl registry/get-ruby-method-impl)
+
+;; =============================================================================
+;; Re-export Debugging and Introspection
+;; =============================================================================
+
+(def debug-method-registry registry/debug-method-registry)
+(def class-methods registry/class-methods)
+(def all-ruby-classes registry/all-ruby-classes)
