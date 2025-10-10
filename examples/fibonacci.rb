@@ -1,12 +1,11 @@
+# expected-output: 1
+# expected-output: 1
+# expected-output: 2
+# expected-output: 3
+# expected-output: 5
+# expected-output: 8
+# expected-output: 13
 # Test: Fibonacci sequence with recursive methods and variables
-# Expected output:
-# 1
-# 1
-# 2
-# 3
-# 5
-# 8
-# 13
 
 def fibonacci(n)
   if n <= 1

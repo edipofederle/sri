@@ -2,7 +2,8 @@
   "Direct AST interpreter for Ruby"
   (:require [sri.parser :as parser]
             [clojure.string]
-            [sri.enumerable :as enum]))
+            [sri.enumerable :as enum]
+            [sri.ruby-classes :as ruby-classes]))
 
 ;; Range data structure
 (defrecord Range [start end inclusive?])
@@ -237,11 +238,15 @@
         right-val (interpret-expression ast right-id variables)]
 
     (case operator
-      "+" (if (or (string? left-val) (string? right-val))
-            ;; String concatenation
+      "+" (cond
+            ;; Ruby object method call
+            (satisfies? ruby-classes/RubyObject left-val)
+            (ruby-classes/invoke-ruby-method left-val :+ right-val)
+            ;; String concatenation for primitive strings
+            (or (string? left-val) (string? right-val))
             (str left-val right-val)
             ;; Numeric addition
-            (+ left-val right-val))
+            :else (+ left-val right-val))
       "-" (- left-val right-val)
       "*" (* left-val right-val)
       "/" (if (and (integer? left-val) (integer? right-val))
@@ -250,12 +255,30 @@
             ;; Floating point division
             (/ left-val right-val))
       "%" (rem left-val right-val)
-      "==" (= left-val right-val)
-      "!=" (not= left-val right-val)
-      "<" (< left-val right-val)
-      ">" (> left-val right-val)
-      "<=" (<= left-val right-val)
-      ">=" (>= left-val right-val)
+      "==" (cond
+             (satisfies? ruby-classes/RubyObject left-val)
+             (ruby-classes/invoke-ruby-method left-val :== right-val)
+             :else (= left-val right-val))
+      "!=" (cond
+             (satisfies? ruby-classes/RubyObject left-val)
+             (ruby-classes/invoke-ruby-method left-val :!= right-val)
+             :else (not= left-val right-val))
+      "<" (cond
+            (satisfies? ruby-classes/RubyObject left-val)
+            (ruby-classes/invoke-ruby-method left-val :< right-val)
+            :else (< left-val right-val))
+      ">" (cond
+            (satisfies? ruby-classes/RubyObject left-val)
+            (ruby-classes/invoke-ruby-method left-val :> right-val)
+            :else (> left-val right-val))
+      "<=" (cond
+             (satisfies? ruby-classes/RubyObject left-val)
+             (ruby-classes/invoke-ruby-method left-val :<= right-val)
+             :else (<= left-val right-val))
+      ">=" (cond
+             (satisfies? ruby-classes/RubyObject left-val)
+             (ruby-classes/invoke-ruby-method left-val :>= right-val)
+             :else (>= left-val right-val))
       "&&" (and left-val right-val)
       "||" (or left-val right-val)
       ".." (create-range left-val right-val true)
@@ -288,6 +311,19 @@
              (throw (ex-info "Integer.sqrt requires exactly 1 argument" {:args args})))
     (throw (ex-info (str "Unknown built-in class method: " method-name) {:method method-name}))))
 
+(defn handle-ruby-class-method
+  "Handle Ruby class methods from our new class hierarchy."
+  [class-name method-name args]
+  (case [class-name method-name]
+    ["Object" "new"] (if (empty? args)
+                      (ruby-classes/create-object)
+                      (ruby-classes/create-object (first args)))
+    ["String" "new"] (if (empty? args)
+                      (ruby-classes/create-string "")
+                      (ruby-classes/create-string (first args)))
+    (throw (ex-info (str "Unknown Ruby class method: " class-name "." method-name) 
+                    {:class class-name :method method-name}))))
+
 (defn handle-user-defined-class-method
   "Handle user-defined class methods with proper parameter binding and return handling."
   [method-info args variables ast]
@@ -316,8 +352,14 @@
                           @(:class-methods receiver)  ; User-defined class (atom)
                           (:class-methods receiver))] ; Built-in class (regular map)
       (if-let [method-info (get class-methods method-name)]
-        (if (:builtin-class-method method-info)
+        (cond
+          (:builtin-class-method method-info)
           (handle-builtin-class-method method-name args)
+          
+          (:ruby-class-method method-info)
+          (handle-ruby-class-method (:name receiver) method-name args)
+          
+          :else
           (handle-user-defined-class-method method-info args variables ast))
         ::method-not-found))
     ::method-not-found))
@@ -391,6 +433,18 @@
 
 
 (def method-not-found ::method-not-found)
+
+(defn try-ruby-object-method
+  "Try to execute a method on a Ruby object, return ::method-not-found if not a Ruby object or method not found."
+  [receiver method-name args]
+  (if (satisfies? ruby-classes/RubyObject receiver)
+    (try
+      (apply ruby-classes/invoke-ruby-method receiver (keyword method-name) args)
+      (catch Exception e
+        (if (re-find #"NoMethodError" (.getMessage e))
+          ::method-not-found
+          (throw e))))
+    ::method-not-found))
 
 (defn try-builtin-instance-method
   "Try to execute a built-in instance method, return ::method-not-found sentinel if method not found."
@@ -612,10 +666,13 @@
                                (try-instance-method-call receiver method-name args variables ast))
               block-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found))
                             (try-block-method receiver method-name ast entity-id variables))
-              builtin-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result))
+              ruby-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result))
+                           (try-ruby-object-method receiver method-name args))
+              builtin-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
+                                       (= ruby-result ::method-not-found))
                               (try-builtin-instance-method receiver method-name args))
               new-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
-                                   (= builtin-result ::method-not-found)
+                                   (= ruby-result ::method-not-found) (= builtin-result ::method-not-found)
                                    (= method-name "new"))
                           (try-class-instantiation receiver args variables ast))]
           (cond
@@ -624,6 +681,8 @@
             ;; Handle instance methods - check for sentinel
             (not= instance-result ::method-not-found) instance-result
             block-result block-result
+            ;; Handle Ruby object methods - check for sentinel  
+            (not= ruby-result ::method-not-found) ruby-result
             ;; Handle builtin methods - check for sentinel
             (not= builtin-result ::method-not-found) builtin-result
             new-result new-result
@@ -1158,7 +1217,15 @@
   {"Integer" {:name "Integer"
               :builtin true
               :class-methods {"max" {:builtin-class-method true :name "max"}
-                              "sqrt" {:builtin-class-method true :name "sqrt"}}}})
+                              "sqrt" {:builtin-class-method true :name "sqrt"}}}
+   "Object" {:name "Object"
+             :builtin true
+             :ruby-class true  ; Mark as new Ruby class
+             :class-methods {"new" {:ruby-class-method true :name "new"}}}
+   "String" {:name "String"
+             :builtin true
+             :ruby-class true  ; Mark as new Ruby class
+             :class-methods {"new" {:ruby-class-method true :name "new"}}}})
 
 (defn interpret-program
   "Interpret a complete program (sequence of statements)."
