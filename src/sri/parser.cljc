@@ -291,16 +291,31 @@
         (throw (ex-info "Expected parameter name or closing |"
                        {:token current-token}))))))
 
+(defn skip-separators
+  "Skip over newline and semicolon tokens in the input stream."
+  [state]
+  (loop [current-state state]
+    (cond
+      (match-token? current-state :newline)
+      (recur (second (consume-token current-state)))
+
+      (match-token? current-state :operator ";")
+      (recur (second (consume-token current-state)))
+
+      :else
+      current-state)))
+
 (defn parse-block-body
   "Parse block body statements until closing }."
   [state]
   (loop [current-state state
          statements []]
-    (let [current-token (current-token current-state)]
+    (let [state-skip-newlines (skip-separators current-state)
+          current-token (current-token state-skip-newlines)]
       (cond
         ;; Found closing } - end of block body
-        (match-token? current-state :operator "}")
-        [current-state statements]
+        (match-token? state-skip-newlines :operator "}")
+        [state-skip-newlines statements]
 
         ;; End of input without closing }
         (nil? current-token)
@@ -308,20 +323,21 @@
 
         ;; Parse a statement
         :else
-        (let [[state-after-stmt stmt-id] (parse-statement current-state)]
+        (let [[state-after-stmt stmt-id] (parse-statement state-skip-newlines)]
           (recur state-after-stmt (conj statements stmt-id)))))))
 
 (defn parse-ruby-block
   "Parse Ruby block literal { |param1, param2| statements }"
   [state]
   (when (match-token? state :operator "{")
-    (let [[open-brace state-after-open] (consume-token state)]
+    (let [[open-brace state-after-open] (consume-token state)
+          state-skip-newlines (skip-separators state-after-open)]
       ;; Check if this is a block (has |) or hash (doesn't have | immediately)
-      (if (match-token? state-after-open :operator "|")
+      (if (match-token? state-skip-newlines :operator "|")
         ;; This is a block - parse parameters and body
         (try
           (let [;; Skip the opening |
-                [_ state-after-pipe] (consume-token state-after-open)
+                [_ state-after-pipe] (consume-token state-skip-newlines)
                 ;; Parse parameters until closing |
                 [state-after-params params] (parse-block-parameters state-after-pipe)
                 ;; Skip the closing |
@@ -596,19 +612,6 @@
           (recur new-state new-left-id))
         [current-state left-id]))))
 
-(defn skip-separators
-  "Skip over newline and semicolon tokens in the input stream."
-  [state]
-  (loop [current-state state]
-    (cond
-      (match-token? current-state :newline)
-      (recur (second (consume-token current-state)))
-
-      (match-token? current-state :operator ";")
-      (recur (second (consume-token current-state)))
-
-      :else
-      current-state)))
 
 
 (defn parse-block

@@ -3,39 +3,9 @@
   (:require [sri.parser :as parser]
             [clojure.string]
             [sri.enumerable :as enum]
-            [sri.ruby-classes-new :as ruby-classes]))
+            [sri.ruby-classes-new :as ruby-classes]
+            [sri.ruby-array :refer [->RubyArray ruby-array?]]))
 
-;; Range data structure
-(defrecord Range [start end inclusive?])
-
-(defn ruby-range?
-  "Check if a value is a Ruby range."
-  [value]
-  (instance? Range value))
-
-(defn create-range
-  "Create a new Ruby range."
-  [start end inclusive?]
-  (->Range start end inclusive?))
-
-(defn char-range?
-  "Check if a range is a character range (string endpoints)."
-  [range]
-  (and (ruby-range? range)
-       (string? (:start range))
-       (string? (:end range))
-       (= 1 (count (:start range)))
-       (= 1 (count (:end range)))))
-
-(defn char-to-int
-  "Convert a single character string to its ASCII value."
-  [char-str]
-  (int (first char-str)))
-
-(defn int-to-char
-  "Convert an ASCII value to a single character string."
-  [ascii-val]
-  (str (char ascii-val)))
 
 (declare interpret-expression interpret-statement interpret-user-method execute-block)
 
@@ -81,8 +51,8 @@
         element-ids (if (seq children) children elements)]
     (if element-ids
       ;; element-ids should be a collection of entity IDs that need interpretation
-      (vec (map #(interpret-expression ast % variables) element-ids))
-      [])))
+      (->RubyArray (atom (vec (map #(interpret-expression ast % variables) element-ids))))
+      (->RubyArray (atom [])))))
 
 (defrecord MutableHash [data])
 
@@ -95,6 +65,7 @@
   "Check if an object is a mutable hash."
   [obj]
   (instance? MutableHash obj))
+
 
 (defn format-ruby-hash
   "Format a hash in Ruby style: {\"key\"=>\"value\"}"
@@ -148,6 +119,19 @@
         receiver-val (interpret-expression ast receiver-id variables)
         index-val (interpret-expression ast index-id variables)]
     (cond
+      ;; Ruby array access (check first)
+      (ruby-array? receiver-val)
+      (cond
+        (not (integer? index-val))
+        (throw (ex-info "Array index must be integer" {:array receiver-val :index index-val}))
+
+        :else
+        (let [array-data @(:data receiver-val)
+              idx (if (< index-val 0) (+ (count array-data) index-val) index-val)]
+          (if (and (>= idx 0) (< idx (count array-data)))
+            (get array-data idx)
+            nil))) ; Ruby returns nil for out-of-bounds access
+
       ;; Mutable hash access
       (mutable-hash? receiver-val)
       (get @(:data receiver-val) index-val)
@@ -156,7 +140,7 @@
       (map? receiver-val)
       (get receiver-val index-val)
 
-      ;; Array access
+      ;; Legacy vector access (for backward compatibility)
       (vector? receiver-val)
       (cond
         (not (integer? index-val))
@@ -165,10 +149,10 @@
         :else
         (let [idx (if (< index-val 0) (+ (count receiver-val) index-val) index-val)]
           (when (= "true" (System/getenv "RUBY_VERBOSE"))
-            (println "DEBUG: Array access - array:" receiver-val "index:" index-val "computed idx:" idx))
+            (println "DEBUG: Vector access - array:" receiver-val "index:" index-val "computed idx:" idx))
           (if (and (>= idx 0) (< idx (count receiver-val)))
             (get receiver-val idx)
-            (throw (ex-info "Array index out of bounds" {:array receiver-val :index index-val :computed-idx idx})))))
+            nil)))
 
       :else
       (throw (ex-info "Access on invalid type" {:receiver receiver-val :index index-val})))))
@@ -205,6 +189,22 @@
         (do
           (swap! (:data current-receiver) assoc index-val new-value)
           new-value)
+
+        ;; Ruby array assignment
+        (ruby-array? current-receiver)
+        (if (integer? index-val)
+          (let [current-data @(:data current-receiver)
+                idx (if (< index-val 0) (+ (count current-data) index-val) index-val)]
+            (if (>= idx 0)
+              (let [;; Expand array if needed
+                    expanded (if (>= idx (count current-data))
+                              (vec (concat current-data (repeat (- idx (count current-data) -1) nil)))
+                              current-data)
+                    updated (assoc expanded idx new-value)]
+                (reset! (:data current-receiver) updated)
+                new-value)
+              (throw (ex-info "Negative index too large" {:index index-val :array-size (count current-data)}))))
+          (throw (ex-info "Array index must be integer" {:array current-receiver :index index-val})))
 
         ;; Legacy immutable hash assignment
         (map? current-receiver)
@@ -281,8 +281,8 @@
              :else (>= left-val right-val))
       "&&" (and left-val right-val)
       "||" (or left-val right-val)
-      ".." (create-range left-val right-val true)
-      "..." (create-range left-val right-val false)
+      ".." (ruby-classes/create-range left-val right-val true)
+      "..." (ruby-classes/create-range left-val right-val false)
       (throw (ex-info (str "Unknown binary operator: " operator)
                       {:operator operator})))))
 
@@ -451,6 +451,7 @@
   [receiver method-name args]
   (case method-name
     "length" (cond
+               (ruby-array? receiver) (count @(:data receiver))
                (vector? receiver) (count receiver)
                (string? receiver) (count receiver)
                (keyword? receiver) (count (name receiver)) ; Length of symbol name
@@ -458,17 +459,9 @@
                (map? receiver) (count receiver)
                :else ::method-not-found)
     "size" (cond
-             (ruby-range? receiver)
-             (let [{:keys [start end inclusive?]} receiver]
-               (if (char-range? receiver)
-                 ;; Character range size
-                 (let [start-ascii (char-to-int start)
-                       end-ascii (char-to-int end)
-                       limit (if inclusive? (inc end-ascii) end-ascii)]
-                   (max 0 (- limit start-ascii)))
-                 ;; Numeric range size
-                 (let [limit (if inclusive? (inc end) end)]
-                   (max 0 (- limit start)))))
+             (ruby-classes/ruby-range? receiver)
+             (ruby-classes/invoke-ruby-method receiver :size)
+             (ruby-array? receiver) (count @(:data receiver))
              (vector? receiver) (count receiver)
              (string? receiver) (count receiver)
              (keyword? receiver) (count (name receiver)) ; Size of symbol name
@@ -476,25 +469,34 @@
              (map? receiver) (count receiver)
              :else ::method-not-found)
     "to_s" (cond
-             (ruby-range? receiver)
-             (let [{:keys [start end inclusive?]} receiver]
-               (if (char-range? receiver)
-                 ;; Character range: "a".."z"
-                 (str "\"" start "\"" (if inclusive? ".." "...") "\"" end "\"")
-                 ;; Numeric range: 1..5
-                 (str start (if inclusive? ".." "...") end)))
+             (ruby-classes/ruby-range? receiver)
+             (ruby-classes/invoke-ruby-method receiver :to_s)
+             (ruby-array? receiver)
+             ;; Ruby array to_s with proper formatting
+             (let [array-data @(:data receiver)]
+               (str "[" 
+                    (clojure.string/join " " 
+                      (map (fn [item]
+                             (cond
+                               (ruby-classes/ruby-range? item)
+                               (ruby-classes/invoke-ruby-method item :to_s)
+                               (keyword? item)
+                               (name item)
+                               (string? item)
+                               (str "\"" item "\"")
+                               :else
+                               (str item)))
+                           array-data))
+                    "]"))
+
              (vector? receiver)
-             ;; Array to_s with proper range formatting
+             ;; Legacy vector to_s with proper range formatting
              (str "[" 
                   (clojure.string/join " " 
                     (map (fn [item]
                            (cond
-                             (ruby-range? item)
-                             (if (char-range? item)
-                               (let [{:keys [start end inclusive?]} item]
-                                 (str "\"" start "\"" (if inclusive? ".." "...") "\"" end "\""))
-                               (let [{:keys [start end inclusive?]} item]
-                                 (str start (if inclusive? ".." "...") end)))
+                             (ruby-classes/ruby-range? item)
+                             (ruby-classes/invoke-ruby-method item :to_s)
                              (keyword? item)
                              (name item)
                              (string? item)
@@ -506,8 +508,14 @@
              (mutable-hash? receiver) (format-ruby-hash @(:data receiver))
              (keyword? receiver) (name receiver) ; Convert :hello to "hello"
              :else (str receiver))
-    "first" (if (vector? receiver) (first receiver) ::method-not-found)
-    "last" (if (vector? receiver) (last receiver) ::method-not-found)
+    "first" (cond
+              (ruby-array? receiver) (first @(:data receiver))
+              (vector? receiver) (first receiver)
+              :else ::method-not-found)
+    "last" (cond
+             (ruby-array? receiver) (last @(:data receiver))
+             (vector? receiver) (last receiver)
+             :else ::method-not-found)
     "negative?" (if (number? receiver) (< receiver 0) ::method-not-found)
     "positive?" (if (number? receiver) (> receiver 0) ::method-not-found)
     "zero?" (if (number? receiver) (= receiver 0) ::method-not-found)
@@ -520,6 +528,7 @@
              ::method-not-found)
     "double" (if (number? receiver) (* receiver 2) ::method-not-found)
     "empty?" (cond
+               (ruby-array? receiver) (empty? @(:data receiver))
                (vector? receiver) (empty? receiver)
                (string? receiver) (empty? receiver)
                (mutable-hash? receiver) (empty? @(:data receiver))
@@ -538,23 +547,8 @@
              (map? receiver) (contains? receiver (first args))
              :else ::method-not-found)
     "include?" (cond
-                 (ruby-range? receiver)
-                 (let [{:keys [start end inclusive?]} receiver
-                       value (first args)]
-                   (if (char-range? receiver)
-                     ;; Character range comparison
-                     (if (and (string? value) (= 1 (count value)))
-                       (let [start-ascii (char-to-int start)
-                             end-ascii (char-to-int end)
-                             value-ascii (char-to-int value)]
-                         (if inclusive?
-                           (and (>= value-ascii start-ascii) (<= value-ascii end-ascii))
-                           (and (>= value-ascii start-ascii) (< value-ascii end-ascii))))
-                       false)
-                     ;; Numeric range comparison
-                     (if inclusive?
-                       (and (>= value start) (<= value end))
-                       (and (>= value start) (< value end)))))
+                 (ruby-classes/ruby-range? receiver)
+                 (ruby-classes/invoke-ruby-method receiver :include? (first args))
                  (mutable-hash? receiver) (contains? @(:data receiver) (first args))
                  (map? receiver) (contains? receiver (first args))
                  :else ::method-not-found)
@@ -587,29 +581,11 @@
                 (name receiver)         ; Same as to_s for symbols
                 ::method-not-found)
     ;; Range methods (each is handled by enumerable module)
-    "to_a" (if (ruby-range? receiver)
-             (let [{:keys [start end inclusive?]} receiver]
-               (if (char-range? receiver)
-                 ;; Character range
-                 (let [start-ascii (char-to-int start)
-                       end-ascii (char-to-int end)
-                       limit (if inclusive? (inc end-ascii) end-ascii)]
-                   (vec (map int-to-char (range start-ascii limit))))
-                 ;; Numeric range
-                 (let [limit (if inclusive? (inc end) end)]
-                   (vec (range start limit)))))
+    "to_a" (if (ruby-classes/ruby-range? receiver)
+             (ruby-classes/invoke-ruby-method receiver :to_a)
              ::method-not-found)
-    "count" (if (ruby-range? receiver)
-              (let [{:keys [start end inclusive?]} receiver]
-                (if (char-range? receiver)
-                  ;; Character range count
-                  (let [start-ascii (char-to-int start)
-                        end-ascii (char-to-int end)
-                        limit (if inclusive? (inc end-ascii) end-ascii)]
-                    (max 0 (- limit start-ascii)))
-                  ;; Numeric range count
-                  (let [limit (if inclusive? (inc end) end)]
-                    (max 0 (- limit start)))))
+    "count" (if (ruby-classes/ruby-range? receiver)
+              (ruby-classes/invoke-ruby-method receiver :count)
               ::method-not-found)
     ;; Default case
     ::method-not-found))
@@ -697,17 +673,28 @@
                    (println)
                    (let [arg (first args)]
                      (cond
+                       (ruby-array? arg)
+                       ;; Print ruby array elements on separate lines
+                       (doseq [item @(:data arg)]
+                         (cond
+                           (nil? item) (println)
+                           (ruby-classes/ruby-range? item)
+                           ;; Use Ruby to_s for ranges
+                           (println (ruby-classes/invoke-ruby-method item :to_s))
+                           (keyword? item)
+                           ;; Print symbols without colon prefix
+                           (println (name item))
+                           :else
+                           (println item)))
+
                        (vector? arg)
-                       ;; Print array elements on separate lines
+                       ;; Print legacy vector elements on separate lines
                        (doseq [item arg]
                          (cond
                            (nil? item) (println)
-                           (ruby-range? item)
-                           ;; Use our custom to_s for ranges
-                           (let [{:keys [start end inclusive?]} item]
-                             (if (char-range? item)
-                               (println (str "\"" start "\"" (if inclusive? ".." "...") "\"" end "\""))
-                               (println (str start (if inclusive? ".." "...") end))))
+                           (ruby-classes/ruby-range? item)
+                           ;; Use Ruby to_s for ranges
+                           (println (ruby-classes/invoke-ruby-method item :to_s))
                            (keyword? item)
                            ;; Print symbols without colon prefix
                            (println (name item))
@@ -722,12 +709,9 @@
                        ;; Print symbols without colon prefix (Ruby behavior)
                        (println (name arg))
 
-                       (ruby-range? arg)
-                       ;; Print ranges with custom format
-                       (let [{:keys [start end inclusive?]} arg]
-                         (if (char-range? arg)
-                           (println (str "\"" start "\"" (if inclusive? ".." "...") "\"" end "\""))
-                           (println (str start (if inclusive? ".." "...") end))))
+                       (ruby-classes/ruby-range? arg)
+                       ;; Print ranges using Ruby to_s
+                       (println (ruby-classes/invoke-ruby-method arg :to_s))
 
                        :else
                        (println arg))))
@@ -840,8 +824,11 @@
         iterable-value (interpret-expression ast iterable variables)
         result (atom nil)
         should-break (atom false)]
-    (when (vector? iterable-value)
-      (loop [items iterable-value]
+    (when (or (vector? iterable-value) (ruby-array? iterable-value))
+      (let [items-to-iterate (if (ruby-array? iterable-value) 
+                               @(:data iterable-value) 
+                               iterable-value)]
+        (loop [items items-to-iterate]
         (when (and (seq items) (not @should-break))
           (let [item (first items)]
             (try
@@ -855,7 +842,7 @@
                     :continue nil   ; Continue to next iteration
                     (throw e)))))
             (when (not @should-break)
-              (recur (rest items)))))))
+              (recur (rest items))))))))
     @result))
 
 (defn interpret-until-statement
@@ -905,22 +892,8 @@
       false)
 
     ;; Range === value
-    (ruby-range? pattern)
-    (let [{:keys [start end inclusive?]} pattern]
-      (if (char-range? pattern)
-        ;; Character range case equality
-        (if (and (string? value) (= 1 (count value)))
-          (let [start-ascii (char-to-int start)
-                end-ascii (char-to-int end)
-                value-ascii (char-to-int value)]
-            (if inclusive?
-              (and (>= value-ascii start-ascii) (<= value-ascii end-ascii))
-              (and (>= value-ascii start-ascii) (< value-ascii end-ascii))))
-          false)
-        ;; Numeric range case equality
-        (if inclusive?
-          (and (>= value start) (<= value end))
-          (and (>= value start) (< value end)))))
+    (ruby-classes/ruby-range? pattern)
+    (ruby-classes/invoke-ruby-method pattern :include? value)
 
     ;; Default: regular equality
     :else (= pattern value)))

@@ -7,7 +7,9 @@
             [sri.ruby-method-registry :as registry]
             [sri.ruby-basic-object :as basic-obj]
             [sri.ruby-object :as ruby-obj]
-            [sri.ruby-string :as ruby-str]))
+            [sri.ruby-string :as ruby-str]
+            [sri.ruby-range :as ruby-range]
+            [sri.ruby-array :as ruby-array]))
 
 ;; =============================================================================
 ;; Re-export Constructor Functions
@@ -25,6 +27,24 @@
 ;; String
 (def create-string ruby-str/create-string)
 
+;; Range
+(def create-range ruby-range/create-range)
+(def ruby-range? ruby-range/ruby-range?)
+(def char-range? ruby-range/char-range?)
+(def char-to-int ruby-range/char-to-int)
+(def int-to-char ruby-range/int-to-char)
+
+;; Array
+(def create-array ruby-array/create-array)
+(def create-empty-array ruby-array/create-empty-array)
+(def vector->ruby-array ruby-array/vector->ruby-array)
+(def ruby-array? ruby-array/ruby-array?)
+(def mutable-array? ruby-array/mutable-array?)
+(def array-get ruby-array/array-get)
+(def array-set! ruby-array/array-set!)
+(def array-push! ruby-array/array-push!)
+(def array-pop! ruby-array/array-pop!)
+
 ;; =============================================================================
 ;; Re-export Record Constructors
 ;; =============================================================================
@@ -32,6 +52,8 @@
 (def ->BasicObject basic-obj/->BasicObject)
 (def ->RubyObjectClass ruby-obj/->RubyObjectClass)
 (def ->RubyString ruby-str/->RubyString)
+(def ->RubyRange ruby-range/->RubyRange)
+(def ->RubyArray ruby-array/->RubyArray)
 
 ;; =============================================================================
 ;; Method Call Interface

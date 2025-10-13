@@ -1,6 +1,7 @@
 (ns sri.enumerable
   "Enumerable module for Sri - provides iteration methods for collections"
-  (:require [sri.parser :as parser]))
+  (:require [sri.parser :as parser]
+            [sri.ruby-array :refer [ruby-array?]]))
 
 ;; Forward declaration for execute-block (defined in interpreter)
 (declare execute-block)
@@ -10,6 +11,7 @@
   "Check if an object supports enumerable operations."
   [obj]
   (or (vector? obj) 
+      (ruby-array? obj) ; Ruby arrays
       (and (record? obj) 
            (contains? obj :start) ; duck typing for ranges
            (contains? obj :end)
@@ -49,6 +51,10 @@
   (cond
     (vector? obj)
     (doseq [item obj]
+      (element-fn item))
+    
+    (ruby-array? obj) ; Ruby arrays
+    (doseq [item @(:data obj)]
       (element-fn item))
     
     (ruby-range? obj)
