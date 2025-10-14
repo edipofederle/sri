@@ -4,10 +4,77 @@
             [clojure.string]
             [sri.enumerable :as enum]
             [sri.ruby-classes-new :as ruby-classes]
-            [sri.ruby-array :refer [->RubyArray ruby-array?]]))
+            [sri.ruby-array :refer [->RubyArray ruby-array?]]
+            [sri.ruby-hash :refer [->RubyHash ruby-hash? create-empty-hash map->ruby-hash]]
+            [sri.ruby-protocols :refer [to-s]]))
 
 
 (declare interpret-expression interpret-statement interpret-user-method execute-block)
+
+;; =============================================================================
+;; Method Definition Record and AST Scoping
+;; =============================================================================
+
+;; IMPORTANT: AST Scoping Strategy for String Interpolation
+;;
+;; Ruby method definitions create a lexical scoping challenge due to our
+;; string interpolation architecture:
+;;
+;; 1. PROBLEM: When processing "Hello #{method_call()}", the tokenizer stores
+;;    the expression "method_call()" as raw source text, not as parsed AST.
+;;    During interpretation, this source is re-tokenized and re-parsed into
+;;    a new temporary AST. Method calls within this new AST context cannot
+;;    find method bodies that exist in the original AST.
+;;
+;; 2. SOLUTION: Store the original AST reference with each method definition.
+;;    When executing a method, always use the stored AST where the method was
+;;    originally defined, regardless of the current execution context.
+;;
+;; 3. ARCHITECTURE NOTE: This new AST creation is an artifact of our design
+;;    choice to defer parsing of #{} expressions until interpretation time.
+;;    Alternative designs (parsing #{} during initial parse) could avoid this,
+;;    but would require more complex tokenizer/parser coordination.
+
+(defrecord MethodDefinition [params body-id ast]
+  ;; params: vector of parameter names
+  ;; body-id: entity ID of the method body in the original AST  
+  ;; ast: the AST where this method was originally defined
+  )
+
+(defn create-method-definition
+  "Create a method definition record with proper structure."
+  [params body-id ast]
+  (->MethodDefinition params body-id ast))
+
+(defn resolve-method-definition
+  "Resolve method definition from variables, returning nil if not found."
+  [variables method-name]
+  (get @variables (str "method:" method-name)))
+
+(defn method-defined?
+  "Check if a method is defined in the current scope."
+  [variables method-name]
+  (some? (resolve-method-definition variables method-name)))
+
+(defn bind-method-parameters
+  "Create a new variable scope with method parameters bound to arguments."
+  [variables params args]
+  (let [local-vars (atom @variables)
+        param-arg-pairs (map vector params args)]
+    (doseq [[param arg] param-arg-pairs]
+      (swap! local-vars assoc param arg))
+    local-vars))
+
+(defn execute-with-return-handling
+  "Execute an expression with proper Ruby return statement handling."
+  [ast entity-id variables]
+  (try
+    (interpret-expression ast entity-id variables)
+    (catch clojure.lang.ExceptionInfo e
+      (let [ex-data (ex-data e)]
+        (if (= (:type ex-data) :return)
+          (:value ex-data)  ; Return the explicit return value
+          (throw e))))))
 
 (defn interpret-literal
   "Interpret a literal value node."
@@ -54,29 +121,6 @@
       (->RubyArray (atom (vec (map #(interpret-expression ast % variables) element-ids))))
       (->RubyArray (atom [])))))
 
-(defrecord MutableHash [data])
-
-(defn create-mutable-hash
-  "Create a mutable hash object using an atom."
-  [initial-map]
-  (->MutableHash (atom initial-map)))
-
-(defn mutable-hash?
-  "Check if an object is a mutable hash."
-  [obj]
-  (instance? MutableHash obj))
-
-
-(defn format-ruby-hash
-  "Format a hash in Ruby style: {\"key\"=>\"value\"}"
-  [hash-map]
-  (if (empty? hash-map)
-    "{}"
-    (let [pairs (map (fn [[k v]]
-                       (str (pr-str k) "=>" (pr-str v)))
-                     hash-map)]
-      (str "{" (clojure.string/join ", " pairs) "}"))))
-
 (defn execute-block
   "Execute a block with given parameters."
   [ast block-id variables block-args]
@@ -108,8 +152,8 @@
                                     (assoc hash key value)))
                                 {}
                                 pairs)]
-        (create-mutable-hash initial-map))
-      (create-mutable-hash {}))))
+        (map->ruby-hash initial-map))
+      (create-empty-hash))))
 
 (defn interpret-array-access
   "Interpret array or hash access like arr[0] or hash[key]."
@@ -132,8 +176,8 @@
             (get array-data idx)
             nil))) ; Ruby returns nil for out-of-bounds access
 
-      ;; Mutable hash access
-      (mutable-hash? receiver-val)
+      ;; Ruby hash access
+      (ruby-hash? receiver-val)
       (get @(:data receiver-val) index-val)
 
       ;; Legacy immutable hash access (for backward compatibility)
@@ -184,8 +228,8 @@
         new-value (interpret-expression ast value variables)]
     (when-let [current-receiver (get @variables array)]
       (cond
-        ;; Mutable hash assignment
-        (mutable-hash? current-receiver)
+        ;; Ruby hash assignment
+        (ruby-hash? current-receiver)
         (do
           (swap! (:data current-receiver) assoc index-val new-value)
           new-value)
@@ -321,7 +365,7 @@
     ["String" "new"] (if (empty? args)
                       (ruby-classes/create-string "")
                       (ruby-classes/create-string (first args)))
-    (throw (ex-info (str "Unknown Ruby class method: " class-name "." method-name) 
+    (throw (ex-info (str "Unknown Ruby class method: " class-name "." method-name)
                     {:class class-name :method method-name}))))
 
 (defn handle-user-defined-class-method
@@ -355,10 +399,10 @@
         (cond
           (:builtin-class-method method-info)
           (handle-builtin-class-method method-name args)
-          
+
           (:ruby-class-method method-info)
           (handle-ruby-class-method (:name receiver) method-name args)
-          
+
           :else
           (handle-user-defined-class-method method-info args variables ast))
         ::method-not-found))
@@ -455,7 +499,7 @@
                (vector? receiver) (count receiver)
                (string? receiver) (count receiver)
                (keyword? receiver) (count (name receiver)) ; Length of symbol name
-               (mutable-hash? receiver) (count @(:data receiver))
+               (ruby-hash? receiver) (count @(:data receiver))
                (map? receiver) (count receiver)
                :else ::method-not-found)
     "size" (cond
@@ -465,7 +509,7 @@
              (vector? receiver) (count receiver)
              (string? receiver) (count receiver)
              (keyword? receiver) (count (name receiver)) ; Size of symbol name
-             (mutable-hash? receiver) (count @(:data receiver))
+             (ruby-hash? receiver) (count @(:data receiver))
              (map? receiver) (count receiver)
              :else ::method-not-found)
     "to_s" (cond
@@ -474,8 +518,8 @@
              (ruby-array? receiver)
              ;; Ruby array to_s with proper formatting
              (let [array-data @(:data receiver)]
-               (str "[" 
-                    (clojure.string/join " " 
+               (str "["
+                    (clojure.string/join " "
                       (map (fn [item]
                              (cond
                                (ruby-classes/ruby-range? item)
@@ -491,8 +535,8 @@
 
              (vector? receiver)
              ;; Legacy vector to_s with proper range formatting
-             (str "[" 
-                  (clojure.string/join " " 
+             (str "["
+                  (clojure.string/join " "
                     (map (fn [item]
                            (cond
                              (ruby-classes/ruby-range? item)
@@ -505,7 +549,7 @@
                              (str item)))
                          receiver))
                   "]")
-             (mutable-hash? receiver) (format-ruby-hash @(:data receiver))
+             (ruby-hash? receiver) (to-s receiver)
              (keyword? receiver) (name receiver) ; Convert :hello to "hello"
              :else (str receiver))
     "first" (cond
@@ -531,33 +575,33 @@
                (ruby-array? receiver) (empty? @(:data receiver))
                (vector? receiver) (empty? receiver)
                (string? receiver) (empty? receiver)
-               (mutable-hash? receiver) (empty? @(:data receiver))
+               (ruby-hash? receiver) (empty? @(:data receiver))
                (map? receiver) (empty? receiver)
                :else ::method-not-found)
     "keys" (cond
-             (mutable-hash? receiver) (vec (keys @(:data receiver)))
+             (ruby-hash? receiver) (vec (keys @(:data receiver)))
              (map? receiver) (vec (keys receiver))
              :else ::method-not-found)
     "values" (cond
-               (mutable-hash? receiver) (vec (vals @(:data receiver)))
+               (ruby-hash? receiver) (vec (vals @(:data receiver)))
                (map? receiver) (vec (vals receiver))
                :else ::method-not-found)
     "key?" (cond
-             (mutable-hash? receiver) (contains? @(:data receiver) (first args))
+             (ruby-hash? receiver) (contains? @(:data receiver) (first args))
              (map? receiver) (contains? receiver (first args))
              :else ::method-not-found)
     "include?" (cond
                  (ruby-classes/ruby-range? receiver)
                  (ruby-classes/invoke-ruby-method receiver :include? (first args))
-                 (mutable-hash? receiver) (contains? @(:data receiver) (first args))
+                 (ruby-hash? receiver) (contains? @(:data receiver) (first args))
                  (map? receiver) (contains? receiver (first args))
                  :else ::method-not-found)
     "member?" (cond
-                (mutable-hash? receiver) (contains? @(:data receiver) (first args))
+                (ruby-hash? receiver) (contains? @(:data receiver) (first args))
                 (map? receiver) (contains? receiver (first args))
                 :else ::method-not-found)
     "delete" (cond
-               (mutable-hash? receiver)
+               (ruby-hash? receiver)
                (let [key-to-delete (first args)
                      old-value (get @(:data receiver) key-to-delete)]
                  (swap! (:data receiver) dissoc key-to-delete)
@@ -566,7 +610,7 @@
                (get receiver (first args)) ; Legacy immutable behavior
                :else ::method-not-found)
     "remove" (cond
-               (mutable-hash? receiver)
+               (ruby-hash? receiver)
                (let [key-to-remove (first args)
                      old-value (get @(:data receiver) key-to-remove)]
                  (swap! (:data receiver) dissoc key-to-remove)
@@ -657,7 +701,7 @@
             ;; Handle instance methods - check for sentinel
             (not= instance-result ::method-not-found) instance-result
             block-result block-result
-            ;; Handle Ruby object methods - check for sentinel  
+            ;; Handle Ruby object methods - check for sentinel
             (not= ruby-result ::method-not-found) ruby-result
             ;; Handle builtin methods - check for sentinel
             (not= builtin-result ::method-not-found) builtin-result
@@ -701,9 +745,9 @@
                            :else
                            (println item)))
 
-                       (mutable-hash? arg)
+                       (ruby-hash? arg)
                        ;; Print hash in Ruby format
-                       (println (format-ruby-hash @(:data arg)))
+                       (println (to-s arg))
 
                        (keyword? arg)
                        ;; Print symbols without colon prefix (Ruby behavior)
@@ -728,7 +772,7 @@
               (first args))
 
         ;; Check if it's a user-defined method
-        (if-let [method-def (get @variables (str "method:" method-name))]
+        (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
           (throw (ex-info (str "Unknown method: " method-name)
                          {:method method-name :args args})))))))
@@ -736,19 +780,11 @@
 (defn interpret-user-method
   "Interpret a call to user-defined method."
   [ast entity-id variables method-def args]
-  (let [{:keys [params body-id]} method-def
-        local-vars (atom @variables)]
-    ;; Bind parameters to arguments
-    (doseq [[param arg] (map vector params args)]
-      (swap! local-vars assoc param arg))
+  (let [{:keys [params body-id ast]} method-def
+        method-ast ast ; Use the AST from the method definition record
+        local-vars (bind-method-parameters variables params args)]
     ;; Execute method body with return handling
-    (try
-      (interpret-expression ast body-id local-vars)
-      (catch clojure.lang.ExceptionInfo e
-        (let [ex-data (ex-data e)]
-          (if (= (:type ex-data) :return)
-            (:value ex-data)  ; Return the explicit return value
-            (throw e)))))))
+    (execute-with-return-handling method-ast body-id local-vars)))
 
 (defn interpret-identifier
   "Interpret an identifier (variable reference or method call with no args)."
@@ -760,8 +796,8 @@
       (get @variables var-name)
 
       ;; Check if it's a method definition (method call with no args)
-      (contains? @variables (str "method:" var-name))
-      (let [method-def (get @variables (str "method:" var-name))]
+      (method-defined? variables var-name)
+      (let [method-def (resolve-method-definition variables var-name)]
         (interpret-user-method ast entity-id variables method-def []))
 
       ;; Neither variable nor method found
@@ -788,7 +824,8 @@
   (let [{:keys [method-name name parameters body]} (parser/get-components ast entity-id [:method-name :name :parameters :body])
         method-name (or method-name name)]
     ;; Store method definition in variables with special prefix
-    (swap! variables assoc (str "method:" method-name) {:params parameters :body-id body})
+    (swap! variables assoc (str "method:" method-name)
+           (create-method-definition parameters body ast))
     nil))
 
 (defn interpret-if-statement
@@ -825,8 +862,8 @@
         result (atom nil)
         should-break (atom false)]
     (when (or (vector? iterable-value) (ruby-array? iterable-value))
-      (let [items-to-iterate (if (ruby-array? iterable-value) 
-                               @(:data iterable-value) 
+      (let [items-to-iterate (if (ruby-array? iterable-value)
+                               @(:data iterable-value)
                                iterable-value)]
         (loop [items items-to-iterate]
         (when (and (seq items) (not @should-break))
@@ -1033,7 +1070,7 @@
                             :parameters ["value"]
                             :attr-setter true
                             :attr-name attr-name})))
-                
+
                 ;; Skip any other statements during class definition
                 :else
                 nil))) ; Skip all other statement types during class definition
