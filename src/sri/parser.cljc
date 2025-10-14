@@ -306,7 +306,7 @@
       current-state)))
 
 (defn parse-block-body
-  "Parse block body statements until closing }."
+  "Parse block body statements until closing } or end keyword."
   [state]
   (loop [current-state state
          statements []]
@@ -317,7 +317,11 @@
         (match-token? state-skip-newlines :operator "}")
         [state-skip-newlines statements]
 
-        ;; End of input without closing }
+        ;; Found 'end' keyword - end of block body
+        (match-token? state-skip-newlines :keyword "end")
+        [state-skip-newlines statements]
+
+        ;; End of input without proper terminator
         (nil? current-token)
         (throw (ex-info "Unexpected end of input in block body" {}))
 
@@ -327,10 +331,12 @@
           (recur state-after-stmt (conj statements stmt-id)))))))
 
 (defn parse-ruby-block
-  "Parse Ruby block literal { |param1, param2| statements }"
+  "Parse Ruby block literal: { |params| body } or do |params| body end"
   [state]
-  (when (match-token? state :operator "{")
-    (let [[open-brace state-after-open] (consume-token state)
+  (cond
+    ;; Handle { } blocks
+    (match-token? state :operator "{")
+    (let [[open-token state-after-open] (consume-token state)
           state-skip-newlines (skip-separators state-after-open)]
       ;; Check if this is a block (has |) or hash (doesn't have | immediately)
       (if (match-token? state-skip-newlines :operator "|")
@@ -346,26 +352,70 @@
                 [state-after-body body-statements] (parse-block-body state-after-closing-pipe)
                 ;; Skip the closing }
                 [_ final-state] (consume-token state-after-body)
-                ;; Create the block node with actual parameters and body
+                ;; Create the block node
                 [new-ast entity-id] (create-node (:ast final-state) :block
                                                :block-params params
                                                :block-body body-statements
-                                               :position {:line (:line open-brace) :column (:column open-brace)})]
+                                               :position {:line (:line open-token) :column (:column open-token)})]
             [(assoc final-state :ast new-ast) entity-id])
           (catch Exception e
             (binding [*out* *err*]
-              (println "DEBUG: Error parsing block:" (.getMessage e))
+              (println "DEBUG: Error parsing { } block:" (.getMessage e))
               (flush))
             nil))
         ;; Not a block, return nil so parse-hash-literal can handle it
-        nil))))
+        nil))
+    
+    ;; Handle do end blocks
+    (match-token? state :keyword "do")
+    (let [[do-token state-after-do] (consume-token state)
+          state-skip-newlines (skip-separators state-after-do)]
+      (try
+        (if (match-token? state-skip-newlines :operator "|")
+          ;; Block with parameters
+          (let [;; Skip the opening |
+                [_ state-after-pipe] (consume-token state-skip-newlines)
+                ;; Parse parameters until closing |
+                [state-after-params params] (parse-block-parameters state-after-pipe)
+                ;; Skip the closing |
+                [_ state-after-closing-pipe] (consume-token state-after-params)
+                ;; Parse block body until 'end'
+                [state-after-body body-statements] (parse-block-body state-after-closing-pipe)
+                ;; Skip the 'end'
+                [_ final-state] (expect-token state-after-body :keyword "end")
+                ;; Create the block node
+                [new-ast entity-id] (create-node (:ast final-state) :block
+                                               :block-params params
+                                               :block-body body-statements
+                                               :position {:line (:line do-token) :column (:column do-token)})]
+            [(assoc final-state :ast new-ast) entity-id])
+          ;; Block without parameters
+          (let [;; Parse block body until 'end'
+                [state-after-body body-statements] (parse-block-body state-skip-newlines)
+                ;; Skip the 'end'
+                [_ final-state] (expect-token state-after-body :keyword "end")
+                ;; Create the block node
+                [new-ast entity-id] (create-node (:ast final-state) :block
+                                               :block-params []
+                                               :block-body body-statements
+                                               :position {:line (:line do-token) :column (:column do-token)})]
+            [(assoc final-state :ast new-ast) entity-id]))
+        (catch Exception e
+          (binding [*out* *err*]
+            (println "DEBUG: Error parsing do/end block:" (.getMessage e))
+            (flush))
+          nil)))
+    
+    ;; Not a block at all
+    :else nil))
 
 (defn parse-method-call
   "Parse a method call, either standalone or with receiver."
   [state receiver-id method-name token]
   (let [[state-after-args args] (parse-argument-list state)
-        ;; Check for block after arguments
-        [final-state block-id] (if (match-token? state-after-args :operator "{")
+        ;; Check for block after arguments (either { } or do end)
+        [final-state block-id] (if (or (match-token? state-after-args :operator "{")
+                                       (match-token? state-after-args :keyword "do"))
                                  (if-let [block-result (parse-ruby-block state-after-args)]
                                    block-result
                                    [state-after-args nil])

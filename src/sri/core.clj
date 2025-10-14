@@ -13,6 +13,8 @@
       (i/evaluate-directly ast root-entity {})
       0)
     (catch clojure.lang.ExceptionInfo e
+      (println "Error:" (.getMessage e))
+      (.printStackTrace e)
       1)))
 
 (defn eval-string
