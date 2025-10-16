@@ -1,15 +1,18 @@
 (ns sri.interpreter
   "Direct AST interpreter for Ruby"
   (:require [sri.parser :as parser]
+            [sri.tokenizer :as tokenizer]
             [clojure.string]
             [sri.enumerable :as enum]
             [sri.ruby-classes-new :as ruby-classes]
             [sri.ruby-array :refer [->RubyArray ruby-array?]]
             [sri.ruby-hash :refer [->RubyHash ruby-hash? create-empty-hash map->ruby-hash]]
+            [sri.ruby-rational :refer [->RubyRational ruby-rational?]]
+            [sri.ruby-complex :refer [->RubyComplex ruby-complex?]]
             [sri.ruby-protocols :refer [to-s]]))
 
 
-(declare interpret-expression interpret-statement interpret-user-method execute-block)
+(declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program)
 
 ;; =============================================================================
 ;; Method Definition Record and AST Scoping
@@ -37,7 +40,7 @@
 
 (defrecord MethodDefinition [params body-id ast]
   ;; params: vector of parameter names
-  ;; body-id: entity ID of the method body in the original AST  
+  ;; body-id: entity ID of the method body in the original AST
   ;; ast: the AST where this method was originally defined
   )
 
@@ -86,6 +89,20 @@
       (boolean? value) value
       (nil? value) nil
       :else value)))
+
+(defn interpret-rational-literal
+  "Interpret a rational literal node."
+  [ast entity-id]
+  (let [numerator (parser/get-component ast entity-id :numerator)
+        denominator (parser/get-component ast entity-id :denominator)]
+    (->RubyRational numerator denominator)))
+
+(defn interpret-complex-literal
+  "Interpret a complex literal node."
+  [ast entity-id]
+  (let [real (parser/get-component ast entity-id :real)
+        imaginary (parser/get-component ast entity-id :imaginary)]
+    (->RubyComplex real imaginary)))
 
 (defn interpret-interpolated-string
   "Interpret an interpolated string by evaluating expressions and concatenating."
@@ -277,58 +294,86 @@
   [ast entity-id variables]
   (let [operator (parser/get-operator ast entity-id)
         left-id (parser/get-left ast entity-id)
-        right-id (parser/get-right ast entity-id)
-        left-val (interpret-expression ast left-id variables)
-        right-val (interpret-expression ast right-id variables)]
+        right-id (parser/get-right ast entity-id)]
 
     (case operator
-      "+" (cond
-            ;; Ruby object method call
-            (satisfies? ruby-classes/RubyObject left-val)
-            (ruby-classes/invoke-ruby-method left-val :+ right-val)
-            ;; String concatenation for primitive strings
-            (or (string? left-val) (string? right-val))
-            (str left-val right-val)
-            ;; Numeric addition
-            :else (+ left-val right-val))
-      "-" (- left-val right-val)
-      "*" (* left-val right-val)
-      "/" (if (and (integer? left-val) (integer? right-val))
-            ;; Ruby-style integer division
-            (quot left-val right-val)
-            ;; Floating point division
-            (/ left-val right-val))
-      "%" (rem left-val right-val)
-      "==" (cond
-             (satisfies? ruby-classes/RubyObject left-val)
-             (ruby-classes/invoke-ruby-method left-val :== right-val)
-             :else (= left-val right-val))
-      "!=" (cond
-             (satisfies? ruby-classes/RubyObject left-val)
-             (ruby-classes/invoke-ruby-method left-val :!= right-val)
-             :else (not= left-val right-val))
-      "<" (cond
-            (satisfies? ruby-classes/RubyObject left-val)
-            (ruby-classes/invoke-ruby-method left-val :< right-val)
-            :else (< left-val right-val))
-      ">" (cond
-            (satisfies? ruby-classes/RubyObject left-val)
-            (ruby-classes/invoke-ruby-method left-val :> right-val)
-            :else (> left-val right-val))
-      "<=" (cond
-             (satisfies? ruby-classes/RubyObject left-val)
-             (ruby-classes/invoke-ruby-method left-val :<= right-val)
-             :else (<= left-val right-val))
-      ">=" (cond
-             (satisfies? ruby-classes/RubyObject left-val)
-             (ruby-classes/invoke-ruby-method left-val :>= right-val)
-             :else (>= left-val right-val))
-      "&&" (and left-val right-val)
-      "||" (or left-val right-val)
-      ".." (ruby-classes/create-range left-val right-val true)
-      "..." (ruby-classes/create-range left-val right-val false)
-      (throw (ex-info (str "Unknown binary operator: " operator)
-                      {:operator operator})))))
+      ;; Short-circuit logical operators
+      "&&" (let [left-val (interpret-expression ast left-id variables)]
+             (if left-val
+               (interpret-expression ast right-id variables)
+               left-val))
+      "||" (let [left-val (interpret-expression ast left-id variables)]
+             (if left-val
+               left-val
+               (interpret-expression ast right-id variables)))
+      "and" (let [left-val (interpret-expression ast left-id variables)]
+              (if left-val
+                (interpret-expression ast right-id variables)
+                left-val))
+      "or" (let [left-val (interpret-expression ast left-id variables)]
+             (if left-val
+               left-val
+               (interpret-expression ast right-id variables)))
+      
+      ;; Assignment operator (special handling)
+      "=" (let [right-val (interpret-expression ast right-id variables)
+                left-node-type (parser/get-node-type ast left-id)]
+            (if (= left-node-type :identifier)
+              (let [var-name (parser/get-component ast left-id :value)]
+                (swap! variables assoc var-name right-val)
+                right-val) ; assignment returns the assigned value
+              (throw (ex-info "Invalid left-hand side of assignment"
+                              {:left-side left-node-type}))))
+
+      ;; Regular operators (evaluate both operands)
+      (let [left-val (interpret-expression ast left-id variables)
+            right-val (interpret-expression ast right-id variables)]
+        (case operator
+          "+" (cond
+                ;; Ruby object method call
+                (satisfies? ruby-classes/RubyObject left-val)
+                (ruby-classes/invoke-ruby-method left-val :+ right-val)
+                ;; String concatenation for primitive strings
+                (or (string? left-val) (string? right-val))
+                (str left-val right-val)
+                ;; Numeric addition
+                :else (+ left-val right-val))
+          "-" (- left-val right-val)
+          "*" (* left-val right-val)
+          "/" (if (and (integer? left-val) (integer? right-val))
+                ;; Ruby-style integer division
+                (quot left-val right-val)
+                ;; Floating point division
+                (/ left-val right-val))
+          "%" (rem left-val right-val)
+          "==" (cond
+                 (satisfies? ruby-classes/RubyObject left-val)
+                 (ruby-classes/invoke-ruby-method left-val :== right-val)
+                 :else (= left-val right-val))
+          "!=" (cond
+                 (satisfies? ruby-classes/RubyObject left-val)
+                 (ruby-classes/invoke-ruby-method left-val :!= right-val)
+                 :else (not= left-val right-val))
+          "<" (cond
+                (satisfies? ruby-classes/RubyObject left-val)
+                (ruby-classes/invoke-ruby-method left-val :< right-val)
+                :else (< left-val right-val))
+          ">" (cond
+                (satisfies? ruby-classes/RubyObject left-val)
+                (ruby-classes/invoke-ruby-method left-val :> right-val)
+                :else (> left-val right-val))
+          "<=" (cond
+                 (satisfies? ruby-classes/RubyObject left-val)
+                 (ruby-classes/invoke-ruby-method left-val :<= right-val)
+                 :else (<= left-val right-val))
+          ">=" (cond
+                 (satisfies? ruby-classes/RubyObject left-val)
+                 (ruby-classes/invoke-ruby-method left-val :>= right-val)
+                 :else (>= left-val right-val))
+          ".." (ruby-classes/create-range left-val right-val true)
+          "..." (ruby-classes/create-range left-val right-val false)
+          (throw (ex-info (str "Unknown binary operator: " operator)
+                          {:operator operator})))))))
 
 (defn interpret-unary-operation
   "Interpret a unary operation like -5 or !true."
@@ -337,9 +382,15 @@
         operand-id (parser/get-component ast entity-id :operand)
         operand-val (interpret-expression ast operand-id variables)]
     (case operator
-      "-" (- operand-val)
+      "-" (cond
+            (satisfies? ruby-classes/RubyObject operand-val)
+            (ruby-classes/invoke-ruby-method operand-val "-@")
+            :else (- operand-val))
       "!" (not operand-val)
-      "+" operand-val
+      "+" (cond
+            (satisfies? ruby-classes/RubyObject operand-val)
+            (ruby-classes/invoke-ruby-method operand-val "+@")
+            :else operand-val)
       (throw (ex-info (str "Unknown unary operator: " operator)
                       {:operator operator})))))
 
@@ -771,6 +822,33 @@
               (prn (first args))
               (first args))
 
+        "eval" (do
+                 (if (empty? args)
+                   (throw (ex-info "eval requires a string argument" {:args args}))
+                   (let [code-str (first args)]
+                     (if (string? code-str)
+                       ;; Parse and evaluate the Ruby code string
+                       (try
+                         (let [tokens (tokenizer/tokenize code-str)
+                               eval-ast (parser/parse tokens)
+                               eval-root-id (parser/find-root-entity eval-ast)]
+                           ;; Execute the parsed AST - note: this creates a new variable scope
+                           (interpret-program eval-ast eval-root-id {}))
+                         (catch Exception e
+                           (throw (ex-info (str "eval error: " (.getMessage e))
+                                          {:code code-str :original-error e}))))
+                       (throw (ex-info "eval argument must be a string" {:arg code-str :type (type code-str)}))))))
+
+        "Rational" (do
+                     (let [num (or (first args) 0)
+                           den (or (second args) 1)]
+                       (->RubyRational num den)))
+
+        "Complex" (do
+                    (let [real (or (first args) 0)
+                          imaginary (or (second args) 0)]
+                      (->RubyComplex real imaginary)))
+
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
@@ -817,6 +895,18 @@
       (let [direct-value (parser/get-value ast entity-id)]
         (swap! variables assoc variable direct-value)
         direct-value))))
+
+(defn interpret-multiple-assignment
+  "Interpret a multiple assignment statement (x, y = value)."
+  [ast entity-id variables]
+  (let [var-names (parser/get-component ast entity-id :variables)
+        value-id (parser/get-component ast entity-id :value)
+        interpreted-value (interpret-expression ast value-id variables)]
+    ;; In Ruby, multiple assignment to single value assigns that value to all variables
+    ;; Example: x, y = nil assigns nil to both x and y
+    (doseq [var-name var-names]
+      (swap! variables assoc var-name interpreted-value))
+    interpreted-value))
 
 (defn interpret-method-definition
   "Interpret a method definition like def add(a, b) ... end."
@@ -1131,6 +1221,9 @@
    (let [node-type (parser/get-node-type ast entity-id)]
      (case node-type
        :integer-literal (interpret-literal ast entity-id)
+       :float-literal (interpret-literal ast entity-id)
+       :rational-literal (interpret-rational-literal ast entity-id)
+       :complex-literal (interpret-complex-literal ast entity-id)
        :string-literal (interpret-literal ast entity-id)
        :interpolated-string (interpret-interpolated-string ast entity-id variables)
        :boolean-literal (interpret-literal ast entity-id)
@@ -1143,6 +1236,7 @@
        :method-call (interpret-method-call ast entity-id variables)
        :identifier (interpret-identifier ast entity-id variables)
        :assignment-statement (interpret-assignment ast entity-id variables)
+       :multiple-assignment-statement (interpret-multiple-assignment ast entity-id variables)
        :array-access (interpret-array-access ast entity-id variables)
        :array-assignment (interpret-array-assignment ast entity-id variables)
        :indexed-assignment-statement (interpret-indexed-assignment ast entity-id variables)
@@ -1180,6 +1274,9 @@
    (let [node-type (parser/get-node-type ast entity-id)]
      (case node-type
        :integer-literal (interpret-literal ast entity-id)
+       :float-literal (interpret-literal ast entity-id)
+       :rational-literal (interpret-rational-literal ast entity-id)
+       :complex-literal (interpret-complex-literal ast entity-id)
        :string-literal (interpret-literal ast entity-id)
        :interpolated-string (interpret-interpolated-string ast entity-id variables)
        :boolean-literal (interpret-literal ast entity-id)
@@ -1192,6 +1289,7 @@
        :method-call (interpret-method-call ast entity-id variables)
        :identifier (interpret-identifier ast entity-id variables)
        :assignment-statement (interpret-assignment ast entity-id variables)
+       :multiple-assignment-statement (interpret-multiple-assignment ast entity-id variables)
        :array-access (interpret-array-access ast entity-id variables)
        :array-assignment (interpret-array-assignment ast entity-id variables)
        :indexed-assignment-statement (interpret-indexed-assignment ast entity-id variables)

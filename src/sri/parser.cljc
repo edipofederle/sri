@@ -142,7 +142,10 @@
   (when (match-token? state :integer)
     (let [[token new-state] (consume-token state)
           [new-ast entity-id] (create-node (:ast new-state) :integer-literal
-                                          :value (Integer/parseInt (:value token))
+                                          :value (try 
+                                                   (Integer/parseInt (:value token))
+                                                   (catch NumberFormatException _
+                                                     (BigInteger. (:value token) 10)))
                                           :position {:line (:line token) :column (:column token)})]
       [(assoc new-state :ast new-ast) entity-id])))
 
@@ -153,6 +156,57 @@
     (let [[token new-state] (consume-token state)
           [new-ast entity-id] (create-node (:ast new-state) :float-literal
                                           :value (Double/parseDouble (:value token))
+                                          :position {:line (:line token) :column (:column token)})]
+      [(assoc new-state :ast new-ast) entity-id])))
+
+(defn parse-rational-literal
+  "Parse a rational literal."
+  [state]
+  (when (match-token? state :rational)
+    (let [[token new-state] (consume-token state)
+          number-str (:value token)
+          [numerator denominator] (if (clojure.string/includes? number-str ".")
+                                    ;; Handle float rationals like "1.0" -> 1/1, "0.5" -> 1/2  
+                                    (let [parts (clojure.string/split number-str #"\.")
+                                          integer-part (first parts)
+                                          decimal-part (second parts)
+                                          decimal-places (count decimal-part)
+                                          ;; Use BigInteger for large denominators
+                                          denominator (bigint (Math/pow 10 decimal-places))
+                                          ;; Combine integer and decimal parts: "1.23" -> 123
+                                          combined-str (str integer-part decimal-part)
+                                          numerator (if (= combined-str "")
+                                                      0
+                                                      (BigInteger. combined-str 10))]
+                                      [numerator denominator])
+                                    ;; Handle integer rationals like "3" -> 3/1
+                                    [(try 
+                                       (Integer/parseInt number-str)
+                                       (catch NumberFormatException _
+                                         (BigInteger. number-str 10))) 1])
+          [new-ast entity-id] (create-node (:ast new-state) :rational-literal
+                                          :numerator numerator
+                                          :denominator denominator
+                                          :position {:line (:line token) :column (:column token)})]
+      [(assoc new-state :ast new-ast) entity-id])))
+
+(defn parse-complex-literal
+  "Parse a complex literal."
+  [state]
+  (when (match-token? state :complex)
+    (let [[token new-state] (consume-token state)
+          number-str (:value token)
+          imaginary (if (clojure.string/includes? number-str ".")
+                      ;; Handle float complex literals like "5.0" -> 5.0i
+                      (Double/parseDouble number-str)
+                      ;; Handle integer complex literals like "5" -> 5i
+                      (try 
+                        (Integer/parseInt number-str)
+                        (catch NumberFormatException _
+                          (BigInteger. number-str 10))))
+          [new-ast entity-id] (create-node (:ast new-state) :complex-literal
+                                          :real 0
+                                          :imaginary imaginary
                                           :position {:line (:line token) :column (:column token)})]
       [(assoc new-state :ast new-ast) entity-id])))
 
@@ -536,6 +590,8 @@
   [state]
   (or (parse-integer-literal state)
       (parse-float-literal state)
+      (parse-rational-literal state)
+      (parse-complex-literal state)
       (parse-string-literal state)
       (parse-interpolated-string state)
       (parse-boolean-literal state)
@@ -565,10 +621,18 @@
               state-with-ast (assoc state-after-id :ast new-ast)]
           [state-with-ast entity-id]))
       (when (match-token? state :operator "(")
-        (let [[_ state] (consume-token state)
-              [state expr-id] (parse-expression state)
-              [_ state] (expect-token state :operator ")")]
-          [state expr-id]))))
+        (let [[_ state-after-open] (consume-token state)]
+          (if (match-token? state-after-open :operator ")")
+            ;; Empty parentheses - create nil literal
+            (let [[_ state-after-close] (consume-token state-after-open)
+                  [new-ast entity-id] (create-node (:ast state-after-close) :nil-literal
+                                                  :value nil
+                                                  :position {:line (:line (current-token state)) :column (:column (current-token state))})]
+              [(assoc state-after-close :ast new-ast) entity-id])
+            ;; Non-empty parentheses - parse expression
+            (let [[state expr-id] (parse-expression state-after-open)
+                  [_ state] (expect-token state :operator ")")]
+              [state expr-id]))))))
 
 (defn parse-primary
   "Parse a primary expression (literals, identifiers, parenthesized expressions, method calls)."
@@ -605,13 +669,15 @@
 (def operator-precedence
   "Map of operator symbols to their precedence level.
    Higher numbers = higher precedence."
-  {"or" 1
-   "and" 2
-   ".." 2.5 "..." 2.5
-   "==" 3 "!=" 3
-   "<" 4 "<=" 4 ">" 4 ">=" 4
-   "+" 5 "-" 5
-   "*" 6 "/" 6 "%" 6})
+  {"and" 1 "or" 1             ; Low precedence logical operators  
+   "||" 2                     ; Logical OR 
+   "&&" 3                     ; Logical AND
+   "=" 4                      ; Assignment
+   ".." 4.5 "..." 4.5
+   "==" 5 "!=" 5
+   "<" 6 "<=" 6 ">" 6 ">=" 6
+   "+" 7 "-" 7
+   "*" 8 "/" 8 "%" 8})
 
 (defn get-precedence
   "Get the precedence of an operator, or 0 if not found."
@@ -640,8 +706,10 @@
               [_ state-after-op] (consume-token current-state)
               [state-after-right right-id] (parse-primary state-after-op)
 
-              ;; Handle right-associative operators (none in our current set)
-              next-min-precedence (inc op-precedence)
+              ;; Handle right-associative operators (assignment)
+              next-min-precedence (if (= operator "=")
+                                    op-precedence  ; Right associative for assignment
+                                    (inc op-precedence))
 
               ;; Check if we need to parse more operators with higher precedence
               [final-state final-right-id]
@@ -1082,6 +1150,48 @@
                                              :position {:line (:line method-token) :column (:column method-token)})]
           [(assoc state-after-value :ast new-ast) entity-id])))))
 
+(defn parse-variable-list
+  "Parse a comma-separated list of variables (x, y, z)"
+  [state]
+  (loop [current-state state
+         variables []]
+    (if (match-token? current-state :identifier)
+      (let [[var-token state-after-var] (consume-token current-state)
+            new-variables (conj variables (:value var-token))]
+        (if (match-token? state-after-var :operator ",")
+          (let [[_ state-after-comma] (consume-token state-after-var)]
+            (recur state-after-comma new-variables))
+          [state-after-var new-variables]))
+      [current-state variables])))
+
+(defn parse-multiple-assignment-statement
+  "Parse a multiple assignment statement (x, y = expression)."
+  [state]
+  (when (match-token? state :identifier)
+    ;; Look ahead to see if this is a multiple assignment (has comma)
+    (let [lookahead-pos (:pos state)
+          has-comma? (loop [pos (inc lookahead-pos)]
+                      (if (>= pos (count (:tokens state)))
+                        false
+                        (let [token (nth (:tokens state) pos)]
+                          (cond
+                            (= (:type token) :operator)
+                            (case (:value token)
+                              "," true
+                              "=" false
+                              (recur (inc pos)))
+                            :else (recur (inc pos))))))]
+      (when has-comma?
+        (let [[state-after-vars variables] (parse-variable-list state)]
+          (when (match-token? state-after-vars :operator "=")
+            (let [[_ state-after-assign] (consume-token state-after-vars)
+                  [state-after-value value-id] (parse-expression state-after-assign)
+                  [new-ast entity-id] (create-node (:ast state-after-value) :multiple-assignment-statement
+                                                 :variables variables
+                                                 :value value-id
+                                                 :position {:line (:line (first (:tokens state))) :column (:column (first (:tokens state)))})]
+              [(assoc state-after-value :ast new-ast) entity-id])))))))
+
 (defn parse-assignment-statement
   "Parse an assignment statement (identifier = expression)."
   [state]
@@ -1095,6 +1205,7 @@
                                              :value value-id
                                              :position {:line (:line id-token) :column (:column id-token)})]
           [(assoc state-after-value :ast new-ast) entity-id]))))
+
 
 (defn parse-instance-variable-assignment
   "Parse an instance variable assignment (@var = expression)."
@@ -1207,6 +1318,7 @@
       (parse-attr-accessor-statement state)
       (parse-attr-reader-statement state)
       (parse-attr-writer-statement state)
+      (parse-multiple-assignment-statement state)
       (parse-assignment-statement state)
       (parse-expression state)))
 

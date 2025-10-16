@@ -49,6 +49,21 @@
   [ch]
   (and ch (Character/isDigit ^char ch)))
 
+(defn hex-digit?
+  "Check if character is a hexadecimal digit."
+  [ch]
+  (and ch (contains? #{\0 \1 \2 \3 \4 \5 \6 \7 \8 \9 \a \b \c \d \e \f \A \B \C \D \E \F} ch)))
+
+(defn binary-digit?
+  "Check if character is a binary digit."
+  [ch]
+  (and ch (contains? #{\0 \1} ch)))
+
+(defn octal-digit?
+  "Check if character is an octal digit."
+  [ch]
+  (and ch (contains? #{\0 \1 \2 \3 \4 \5 \6 \7} ch)))
+
 (defn letter?
   "Check if character is a letter."
   [ch]
@@ -130,24 +145,245 @@
         start-column (:column state)
         sb (StringBuilder.)]
     (loop [has-dot false
+           has-exponent false
            current-state state]
       (let [ch (peek-char current-state)]
         (cond
           (digit? ch)
           (let [[consumed-ch new-state] (next-char current-state)]
             (.append sb consumed-ch)
-            (recur has-dot new-state))
+            (recur has-dot has-exponent new-state))
 
-          (and (= ch \.) (not has-dot) (digit? (peek-char (update current-state :pos inc))))
+          (and (= ch \.) (not has-dot) (not has-exponent) (digit? (peek-char (update current-state :pos inc))))
           (let [[consumed-ch new-state] (next-char current-state)]
             (.append sb consumed-ch)
-            (recur true new-state))
+            (recur true has-exponent new-state))
+
+          ;; Handle scientific notation (e or E)
+          (and (or (= ch \e) (= ch \E)) 
+               (not has-exponent)
+               (> (.length sb) 0))  ; Must have at least one digit before exponent
+          (let [[consumed-ch state-after-e] (next-char current-state)
+                next-ch (peek-char state-after-e)]
+            (.append sb consumed-ch)
+            ;; Handle optional + or - after e/E
+            (if (or (= next-ch \+) (= next-ch \-))
+              (let [[sign-ch state-after-sign] (next-char state-after-e)]
+                (.append sb sign-ch)
+                (recur has-dot true state-after-sign))
+              (recur has-dot true state-after-e)))
+
+          ;; Handle underscores in numbers (Ruby allows them as visual separators)
+          (and (= ch \_) 
+               (> (.length sb) 0)  ; Must have at least one digit before underscore
+               (digit? (peek-char (update current-state :pos inc))))  ; Must have digit after underscore
+          (let [[_ new-state] (next-char current-state)]
+            ;; Skip the underscore, don't add it to the string builder
+            (recur has-dot has-exponent new-state))
 
           :else
-          (let [number-str (.toString sb)
-                token-type (if has-dot :float :integer)]
-            [(create-token token-type number-str start-line start-column)
-             current-state]))))))
+          ;; Check for rational suffix 'r' or complex suffix 'i'
+          (cond
+            (and (= ch \r) 
+                 (> (.length sb) 0)  ; Must have at least one digit
+                 (not has-exponent)) ; Rationals don't have exponents
+            (let [[_ new-state] (next-char current-state)
+                  number-str (.toString sb)]
+              [(create-token :rational number-str start-line start-column)
+               new-state])
+
+            (and (= ch \i) 
+                 (> (.length sb) 0)) ; Must have at least one digit
+            (let [[_ new-state] (next-char current-state)
+                  number-str (.toString sb)]
+              [(create-token :complex number-str start-line start-column)
+               new-state])
+
+            :else
+            (let [number-str (.toString sb)
+                  token-type (if (or has-dot has-exponent) :float :integer)]
+              [(create-token token-type number-str start-line start-column)
+               current-state])))))))
+
+(defn read-hex-number
+  "Read a hexadecimal number (starting with 0x or 0X) from the input."
+  [state]
+  (let [start-line (:line state)
+        start-column (:column state)
+        ;; Skip the '0'
+        [_ state-after-0] (next-char state)
+        ;; Skip the 'x' or 'X'
+        [_ state-after-x] (next-char state-after-0)
+        sb (StringBuilder.)]
+    (loop [current-state state-after-x]
+      (let [ch (peek-char current-state)]
+        (cond
+          (hex-digit? ch)
+          (let [[consumed-ch new-state] (next-char current-state)]
+            (.append sb consumed-ch)
+            (recur new-state))
+
+          ;; Handle underscores in hex numbers too
+          (and (= ch \_) 
+               (> (.length sb) 0)  ; Must have at least one hex digit before underscore
+               (hex-digit? (peek-char (update current-state :pos inc))))  ; Must have hex digit after underscore
+          (let [[_ new-state] (next-char current-state)]
+            ;; Skip the underscore, don't add it to the string builder
+            (recur new-state))
+
+          :else
+          ;; Check for rational suffix 'r' or complex suffix 'i'
+          (cond
+            (= ch \r)
+            (let [[_ new-state] (next-char current-state)
+                  hex-str (.toString sb)
+                  ;; Convert hex string to integer for rational
+                  int-value (try
+                              (Integer/parseInt hex-str 16)
+                              (catch NumberFormatException _
+                                (BigInteger. hex-str 16)))]
+              [(create-token :rational (str int-value) start-line start-column)
+               new-state])
+
+            (= ch \i)
+            (let [[_ new-state] (next-char current-state)
+                  hex-str (.toString sb)
+                  ;; Convert hex string to integer for complex
+                  int-value (try
+                              (Integer/parseInt hex-str 16)
+                              (catch NumberFormatException _
+                                (BigInteger. hex-str 16)))]
+              [(create-token :complex (str int-value) start-line start-column)
+               new-state])
+
+            :else
+            (let [hex-str (.toString sb)
+                  ;; Convert hex string to integer
+                  int-value (try
+                              (Integer/parseInt hex-str 16)
+                              (catch NumberFormatException _
+                                (BigInteger. hex-str 16)))]
+              [(create-token :integer (str int-value) start-line start-column)
+               current-state])))))))
+
+(defn read-binary-number
+  "Read a binary number (starting with 0b or 0B) from the input."
+  [state]
+  (let [start-line (:line state)
+        start-column (:column state)
+        ;; Skip the '0'
+        [_ state-after-0] (next-char state)
+        ;; Skip the 'b' or 'B'
+        [_ state-after-b] (next-char state-after-0)
+        sb (StringBuilder.)]
+    (loop [current-state state-after-b]
+      (let [ch (peek-char current-state)]
+        (cond
+          (binary-digit? ch)
+          (let [[consumed-ch new-state] (next-char current-state)]
+            (.append sb consumed-ch)
+            (recur new-state))
+
+          ;; Handle underscores in binary numbers too
+          (and (= ch \_) 
+               (> (.length sb) 0)  ; Must have at least one binary digit before underscore
+               (binary-digit? (peek-char (update current-state :pos inc))))  ; Must have binary digit after underscore
+          (let [[_ new-state] (next-char current-state)]
+            ;; Skip the underscore, don't add it to the string builder
+            (recur new-state))
+
+          :else
+          ;; Check for rational suffix 'r' or complex suffix 'i'
+          (cond
+            (= ch \r)
+            (let [[_ new-state] (next-char current-state)
+                  binary-str (.toString sb)
+                  ;; Convert binary string to integer for rational
+                  int-value (try
+                              (Integer/parseInt binary-str 2)
+                              (catch NumberFormatException _
+                                (BigInteger. binary-str 2)))]
+              [(create-token :rational (str int-value) start-line start-column)
+               new-state])
+
+            (= ch \i)
+            (let [[_ new-state] (next-char current-state)
+                  binary-str (.toString sb)
+                  ;; Convert binary string to integer for complex
+                  int-value (try
+                              (Integer/parseInt binary-str 2)
+                              (catch NumberFormatException _
+                                (BigInteger. binary-str 2)))]
+              [(create-token :complex (str int-value) start-line start-column)
+               new-state])
+
+            :else
+            (let [binary-str (.toString sb)
+                  ;; Convert binary string to integer
+                  int-value (try
+                              (Integer/parseInt binary-str 2)
+                              (catch NumberFormatException _
+                                (BigInteger. binary-str 2)))]
+              [(create-token :integer (str int-value) start-line start-column)
+               current-state])))))))
+
+(defn read-octal-number
+  "Read an octal number (starting with 0 followed by octal digits) from the input."
+  [state]
+  (let [start-line (:line state)
+        start-column (:column state)
+        sb (StringBuilder.)]
+    ;; Add the leading 0 but don't consume it yet - we'll handle it in the loop
+    (loop [current-state state]
+      (let [ch (peek-char current-state)]
+        (cond
+          (octal-digit? ch)
+          (let [[consumed-ch new-state] (next-char current-state)]
+            (.append sb consumed-ch)
+            (recur new-state))
+
+          ;; Handle underscores in octal numbers too
+          (and (= ch \_) 
+               (> (.length sb) 0)  ; Must have at least one octal digit before underscore
+               (octal-digit? (peek-char (update current-state :pos inc))))  ; Must have octal digit after underscore
+          (let [[_ new-state] (next-char current-state)]
+            ;; Skip the underscore, don't add it to the string builder
+            (recur new-state))
+
+          :else
+          ;; Check for rational suffix 'r' or complex suffix 'i'
+          (cond
+            (= ch \r)
+            (let [[_ new-state] (next-char current-state)
+                  octal-str (.toString sb)
+                  ;; Convert octal string to integer for rational
+                  int-value (try
+                              (Integer/parseInt octal-str 8)
+                              (catch NumberFormatException _
+                                (BigInteger. octal-str 8)))]
+              [(create-token :rational (str int-value) start-line start-column)
+               new-state])
+
+            (= ch \i)
+            (let [[_ new-state] (next-char current-state)
+                  octal-str (.toString sb)
+                  ;; Convert octal string to integer for complex
+                  int-value (try
+                              (Integer/parseInt octal-str 8)
+                              (catch NumberFormatException _
+                                (BigInteger. octal-str 8)))]
+              [(create-token :complex (str int-value) start-line start-column)
+               new-state])
+
+            :else
+            (let [octal-str (.toString sb)
+                  ;; Convert octal string to integer
+                  int-value (try
+                              (Integer/parseInt octal-str 8)
+                              (catch NumberFormatException _
+                                (BigInteger. octal-str 8)))]
+              [(create-token :integer (str int-value) start-line start-column)
+               current-state])))))))
 
 (declare read-interpolation-expression)
 
@@ -368,6 +604,24 @@
           ;; Just a dot operator
           [(create-token :operator "." start-line start-column) state1]))
 
+      (= ch \&)
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (= next-ch \&)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "&&" start-line start-column) state2])
+          (throw (ex-info "Unexpected character '&' (use && for logical AND)"
+                         {:line start-line :column start-column}))))
+
+      (= ch \|)
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (= next-ch \|)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "||" start-line start-column) state2])
+          ;; Single | is used for block parameters like { |x| ... }
+          [(create-token :operator "|" start-line start-column) state1]))
+
       :else
       (let [op-str (str ch)]
         (if (contains? operators op-str)
@@ -407,7 +661,26 @@
       (read-identifier state)
 
       (digit? ch)
-      (read-number state)
+      ;; Check for special number formats starting with 0
+      (if (= ch \0)
+        (let [next-ch (peek-char (update state :pos inc))]
+          (cond
+            ;; Hexadecimal numbers (0x or 0X)
+            (or (= next-ch \x) (= next-ch \X))
+            (read-hex-number state)
+            
+            ;; Binary numbers (0b or 0B)
+            (or (= next-ch \b) (= next-ch \B))
+            (read-binary-number state)
+            
+            ;; Octal numbers (0 followed by octal digits)
+            (octal-digit? next-ch)
+            (read-octal-number state)
+            
+            ;; Regular number starting with 0 (like 0.5 or just 0)
+            :else
+            (read-number state)))
+        (read-number state))
 
       (or (= ch \") (= ch \'))
       (read-string-literal state ch)
