@@ -7,6 +7,7 @@
 
 (def native-binary "./target/sri")
 
+
 (defn parse-expected-result
   "Parse expected result from file comments starting with '# expected-output:'."
   [file-content]

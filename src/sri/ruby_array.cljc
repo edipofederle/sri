@@ -36,7 +36,15 @@
   RubyComparable
   (ruby-eq [this other]
     (and (instance? RubyArray other)
-         (= @(:data this) @(:data other))))
+         (let [this-data @(:data this)
+               other-data @(:data other)]
+           (and (= (count this-data) (count other-data))
+                (every? true? 
+                        (map (fn [a b]
+                               (if (satisfies? RubyObject a)
+                                 (ruby-eq a b)
+                                 (= a b)))
+                             this-data other-data))))))
   (ruby-compare [this other]
     (when (instance? RubyArray other)
       (compare @(:data this) @(:data other)))))

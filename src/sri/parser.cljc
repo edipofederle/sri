@@ -262,6 +262,28 @@
                                           :position {:line (:line token) :column (:column token)})]
       [(assoc new-state :ast new-ast) entity-id])))
 
+(defn parse-word-array-literal
+  "Parse a word array literal %w(a b c) or %W(a #{expr} c)."
+  [state]
+  (cond
+    (match-token? state :word-array)
+    (let [[token state-after-token] (consume-token state)
+          words (:value token)
+          [new-ast entity-id] (create-node (:ast state-after-token) :word-array-literal
+                                         :words words
+                                         :interpolated false
+                                         :position {:line (:line token) :column (:column token)})]
+      [(assoc state-after-token :ast new-ast) entity-id])
+    
+    (match-token? state :interpolated-word-array)
+    (let [[token state-after-token] (consume-token state)
+          content (:value token)
+          [new-ast entity-id] (create-node (:ast state-after-token) :word-array-literal
+                                         :content content
+                                         :interpolated true
+                                         :position {:line (:line token) :column (:column token)})]
+      [(assoc state-after-token :ast new-ast) entity-id])))
+
 (defn parse-symbol-literal
   "Parse a symbol literal."
   [state]
@@ -519,6 +541,77 @@
         :else
         [current-state current-id])))
 
+(defn parse-hash-key-with-shorthand
+  "Parse a hash key, handling symbol shorthand syntax (key: value)"
+  [state]
+  (let [start-pos (:pos state)]
+    ;; Try to parse as identifier followed by :
+    (if (and (match-token? state :identifier)
+             (match-token? (update state :pos inc) :operator ":"))
+      ;; Symbol shorthand: convert identifier to symbol
+      (let [[id-token state-after-id] (consume-token state)
+            [new-ast symbol-id] (create-node (:ast state-after-id) :symbol-literal
+                                           :value (keyword (:value id-token))
+                                           :position {:line (:line id-token) :column (:column id-token)})]
+        [(assoc state-after-id :ast new-ast) symbol-id])
+      ;; Regular expression parsing
+      (parse-expression state))))
+
+(defn parse-inline-hash-in-array
+  "Parse an inline hash in array context like [key => value, key2: value2]"
+  [first-key-id value-state]
+  ;; Use the already parsed first key, then continue with hash parsing
+  (let [
+        ;; Consume the => or : operator
+        [arrow-token state-after-arrow] (cond
+                                          (match-token? value-state :operator ":")
+                                          (consume-token value-state)
+                                          (match-token? value-state :operator "=>")
+                                          (consume-token value-state)
+                                          :else
+                                          (throw (ex-info "Expected ':' or '=>' in hash literal"
+                                                         {:token (current-token value-state)})))
+        ;; Parse the first value
+        [state-after-first-value first-value-id] (parse-expression state-after-arrow)
+        ;; Start collecting pairs
+        initial-pairs [[first-key-id first-value-id]]]
+    
+    ;; Continue parsing pairs until we hit ]
+    (loop [current-state state-after-first-value
+           pairs initial-pairs]
+      (cond
+        (match-token? current-state :operator "]")
+        (let [[new-ast entity-id] (create-node (:ast current-state) :hash-literal
+                                             :pairs pairs
+                                             :position {:line (:line arrow-token) :column (:column arrow-token)})]
+          [(assoc current-state :ast new-ast) entity-id])
+        
+        (match-token? current-state :operator ",")
+        (let [[_ state-after-comma] (consume-token current-state)]
+          (if (match-token? state-after-comma :operator "]")
+            ;; Trailing comma
+            (let [[new-ast entity-id] (create-node (:ast state-after-comma) :hash-literal
+                                                 :pairs pairs
+                                                 :position {:line (:line arrow-token) :column (:column arrow-token)})]
+              [(assoc state-after-comma :ast new-ast) entity-id])
+            ;; Parse next key-value pair
+            (let [[state-after-key key-id] (parse-hash-key-with-shorthand state-after-comma)
+                  [arrow-token state-after-arrow] (cond
+                                                    (match-token? state-after-key :operator ":")
+                                                    (consume-token state-after-key)
+                                                    (match-token? state-after-key :operator "=>")
+                                                    (consume-token state-after-key)
+                                                    :else
+                                                    (throw (ex-info "Expected ':' or '=>' in hash literal"
+                                                                   {:token (current-token state-after-key)})))
+                  [state-after-value value-id] (parse-expression state-after-arrow)
+                  new-pairs (conj pairs [key-id value-id])]
+              (recur state-after-value new-pairs))))
+        
+        :else
+        (throw (ex-info "Expected ',' or ']' in hash literal"
+                       {:token (current-token current-state)}))))))
+
 (defn parse-array-literal
   "Parse array literal [1, 2, 3]"
   [state]
@@ -533,6 +626,16 @@
                                        (cond
                                          (match-token? state-after-element :operator "]")
                                          [new-elements state-after-element]
+                                         
+                                         ;; Check for inline hash: if we see => or : after any element, parse as hash
+                                         (or (match-token? state-after-element :operator "=>")
+                                             (match-token? state-after-element :operator ":"))
+                                         (let [;; Parse the rest as a hash literal starting from current element
+                                               [hash-state hash-id] (parse-inline-hash-in-array element-id state-after-element)
+                                               ;; Combine previous elements with the hash
+                                               all-elements (conj (vec (butlast new-elements)) hash-id)]
+                                           [all-elements hash-state])
+                                         
                                          (match-token? state-after-element :operator ",")
                                          (let [[_ state-after-comma] (consume-token state-after-element)]
                                            (if (match-token? state-after-comma :operator "]")
@@ -556,7 +659,7 @@
                                 [[] state-after-open]
                                 (loop [current-state state-after-open
                                        pairs []]
-                                  (let [[state-after-key key-id] (parse-expression current-state)
+                                  (let [[state-after-key key-id] (parse-hash-key-with-shorthand current-state)
                                         ;; Handle both : and => syntax
                                         [arrow-token state-after-arrow] (cond
                                                                           (match-token? state-after-key :operator ":")
@@ -598,6 +701,7 @@
       (parse-nil-literal state)
       (parse-self-literal state)
       (parse-symbol-literal state)
+      (parse-word-array-literal state)
       (parse-array-literal state)
       (parse-hash-literal state)
       (parse-case-statement state)
@@ -645,6 +749,13 @@
                                                          :operand operand-id
                                                          :position {:line (:line minus-token) :column (:column minus-token)})]
                        [(assoc state-after-operand :ast new-ast) unary-id]))
+                   (when (match-token? state :operator "*")
+                     (let [[splat-token state-after-splat] (consume-token state)
+                           [state-after-operand operand-id] (parse-atomic state-after-splat)
+                           [new-ast splat-id] (create-node (:ast state-after-operand) :splat-operation
+                                                         :operand operand-id
+                                                         :position {:line (:line splat-token) :column (:column splat-token)})]
+                       [(assoc state-after-operand :ast new-ast) splat-id]))
                    (when (match-token? state :identifier)
                      (let [[id-token state-after-id] (consume-token state)
                            [new-ast entity-id] (create-node (:ast state-after-id) :identifier

@@ -385,7 +385,7 @@
               [(create-token :integer (str int-value) start-line start-column)
                current-state])))))))
 
-(declare read-interpolation-expression)
+(declare read-interpolation-expression read-word-array)
 
 (defn string-contains-interpolation?
   "Check if a string contains #{...} interpolation."
@@ -685,8 +685,94 @@
       (or (= ch \") (= ch \'))
       (read-string-literal state ch)
 
+      (= ch \%)
+      ;; Check for %w() and %W() word arrays
+      (let [next-ch (peek-char (update state :pos inc))]
+        (cond 
+          (= next-ch \w) (read-word-array state false)  ; %w - no interpolation
+          (= next-ch \W) (read-word-array state true)   ; %W - with interpolation
+          :else (read-operator state)))
+
       :else
       (read-operator state))))
+
+(defn read-word-array
+  "Read %w() or %W() word array literal."
+  [state with-interpolation?]
+  (let [start-line (:line state)
+        start-column (:column state)
+        ;; Skip %w
+        [_ state-after-percent] (next-char state)
+        [_ state-after-w] (next-char state-after-percent)
+        ;; Get the delimiter
+        delimiter-ch (peek-char state-after-w)]
+    (if (contains? #{\( \[ \{ \< \/ \| \! \@ \# \$ \% \^ \& \* \- \_ \+ \= \~ \`} delimiter-ch)
+      (let [closing-delimiter (case delimiter-ch
+                                \( \)
+                                \[ \]
+                                \{ \}
+                                \< \>
+                                delimiter-ch) ; For other delimiters, use the same character
+            [_ state-after-open] (next-char state-after-w)
+            ;; Read content until closing delimiter, handling escape sequences
+            [content final-state] (loop [current-state state-after-open
+                                         content ""]
+                                    (let [ch (peek-char current-state)]
+                                      (cond
+                                        (nil? ch)
+                                        (throw (ex-info "Unterminated %w literal"
+                                                       {:line start-line :column start-column}))
+                                        (= ch closing-delimiter)
+                                        [content (second (next-char current-state))]
+                                        (= ch \\)
+                                        ;; Handle escape sequences
+                                        (let [[_ state-after-backslash] (next-char current-state)
+                                              next-ch (peek-char state-after-backslash)]
+                                          (if (nil? next-ch)
+                                            (throw (ex-info "Unterminated escape sequence in %w literal"
+                                                           {:line start-line :column start-column}))
+                                            (let [escaped-char (case next-ch
+                                                                \space \space
+                                                                \t \tab      ; t character → actual tab
+                                                                \n \newline  ; n character → actual newline
+                                                                \r \return   ; r character → actual carriage return
+                                                                \\ \\
+                                                                ;; For any other character, just include it literally
+                                                                next-ch)
+                                                  [_ state-after-escaped] (next-char state-after-backslash)]
+                                              ;; Mark escaped whitespace with special placeholders
+                                              (cond
+                                                (= escaped-char \space)
+                                                (recur state-after-escaped
+                                                       (str content "\u0001"))  ; Placeholder for escaped space
+                                                (= escaped-char \tab)
+                                                (recur state-after-escaped
+                                                       (str content "\u0002"))  ; Placeholder for escaped tab
+                                                (= escaped-char \newline)
+                                                (recur state-after-escaped
+                                                       (str content "\u0003"))  ; Placeholder for escaped newline
+                                                :else
+                                                (recur state-after-escaped
+                                                       (str content escaped-char))))))
+                                        :else
+                                        (recur (second (next-char current-state))
+                                               (str content ch)))))
+            ;; Store raw content and interpolation flag
+            token-type (if with-interpolation? :interpolated-word-array :word-array)
+            ;; For interpolated arrays, store raw content; for regular arrays, split immediately
+            token-value (if with-interpolation?
+                         content  ; Store raw content for later interpolation
+                         (if (empty? content) 
+                           [] 
+                           ;; Split by unescaped spaces, then restore escaped characters
+                           (map #(-> %
+                                     (clojure.string/replace "\u0001" " ")
+                                     (clojure.string/replace "\u0002" "\t")
+                                     (clojure.string/replace "\u0003" "\n"))
+                                (clojure.string/split content #"\s+"))))]
+        [(create-token token-type token-value start-line start-column) final-state])
+      (throw (ex-info (str "Invalid delimiter for %w: " delimiter-ch)
+                     {:line start-line :column start-column})))))
 
 (defn tokenize
   "Tokenize a complete Ruby source string into a sequence of tokens."

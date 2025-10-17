@@ -82,7 +82,14 @@
           (when-let [match (re-find #"^(.+)\.should\s+be_(true|false)" trimmed-line)]
             (swap! assertions conj {:expression (str/trim (second match))
                                     :expected (nth match 2)
-                                    :assertion-type :be_boolean})))))
+                                    :assertion-type :be_boolean}))
+          
+          ;; Handle .should be_kind_of(Class)
+          (re-find #"\.should\s+be_kind_of\(" trimmed-line)
+          (when-let [match (re-find #"^(.+)\.should\s+be_kind_of\((.+)\)" trimmed-line)]
+            (swap! assertions conj {:expression (str/trim (second match))
+                                    :expected (str/trim (nth match 2))
+                                    :assertion-type :be_kind_of})))))
     @assertions))
 
 (defn evaluate-assertion
@@ -140,7 +147,9 @@
                    ;; Pattern: expression.should be_nil  
                    #"^(.+?)\.should\s+be_nil\s*$"
                    ;; Pattern: expression.should be_true/be_false
-                   #"^(.+?)\.should\s+be_(true|false)\s*$"]]
+                   #"^(.+?)\.should\s+be_(true|false)\s*$"
+                   ;; Pattern: expression.should be_kind_of(Class)
+                   #"^(.+?)\.should\s+be_kind_of\((.+?)\)\s*$"]]
               
               (loop [patterns assertion-patterns
                      matched? false]
@@ -163,18 +172,56 @@
                               ;; Execute accumulated code + expression
                               full-code (str (str/join "\n" @accumulated-code) "\n" expr)
                               result (sri/eval-string full-code)
-                              expected-val (sri/eval-string expected-str)
-                              passed? (= result expected-val)]
+                              passed? (cond
+                                      (re-find #"be_kind_of" trimmed-line)
+                                      ;; For be_kind_of, check if result is instance of the class
+                                      (let [class-name expected-str]
+                                        (cond
+                                          (= class-name "Array") (or (vector? result) 
+                                                                    (and result 
+                                                                         (.contains (str (type result)) "RubyArray")))
+                                          (= class-name "String") (or (string? result)
+                                                                     (and result
+                                                                          (.contains (str (type result)) "RubyString")))
+                                          (= class-name "Integer") (integer? result)
+                                          (= class-name "Float") (float? result)
+                                          (= class-name "Hash") (or (map? result)
+                                                                   (and result
+                                                                        (.contains (str (type result)) "RubyHash")))
+                                          :else false))
+                                      :else
+                                      ;; Regular equality check - use Ruby equality
+                                      (let [expected-val (sri/eval-string expected-str)]
+                                        (cond
+                                          ;; If both are RubyObjects, use ruby-eq from result
+                                          (and (satisfies? sri.ruby-protocols/RubyObject result)
+                                               (satisfies? sri.ruby-protocols/RubyObject expected-val))
+                                          (sri.ruby-protocols/ruby-eq result expected-val)
+                                          
+                                          ;; If only result is RubyObject, use ruby-eq from result
+                                          (satisfies? sri.ruby-protocols/RubyObject result)
+                                          (sri.ruby-protocols/ruby-eq result expected-val)
+                                          
+                                          ;; If only expected is RubyObject, use ruby-eq from expected
+                                          (satisfies? sri.ruby-protocols/RubyObject expected-val)
+                                          (sri.ruby-protocols/ruby-eq expected-val result)
+                                          
+                                          ;; Neither is RubyObject, use regular equality
+                                          :else
+                                          (= result expected-val))))]
                           
                           (swap! results conj {:passed? passed?
                                              :result result
-                                             :expected expected-val
+                                             :expected (if (re-find #"be_kind_of" trimmed-line)
+                                                        expected-str  ; For be_kind_of, show class name
+                                                        (let [expected-val (sri/eval-string expected-str)] expected-val))
                                              :expression expr
                                              :description description
                                              :assertion-type (cond
                                                             (re-find #"be_nil" trimmed-line) :be_nil
                                                             (re-find #"be_true" trimmed-line) :be_true
                                                             (re-find #"be_false" trimmed-line) :be_false
+                                                            (re-find #"be_kind_of" trimmed-line) :be_kind_of
                                                             :else :equals)}))
                         (catch Exception e
                           (swap! results conj {:passed? false

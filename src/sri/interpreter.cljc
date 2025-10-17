@@ -127,6 +127,51 @@
                         (str "UNKNOWN: " part)))
                     parts))))
 
+(defn interpolate-string
+  "Interpolate #{} expressions in a string."
+  [content variables]
+  (let [;; Simple regex to find #{...} patterns
+        pattern #"\#\{([^}]+)\}"
+        matcher (re-matcher pattern content)]
+    (loop [result ""
+           last-end 0]
+      (if (.find matcher)
+        (let [start (.start matcher)
+              end (.end matcher)
+              before-match (subs content last-end start)
+              expr-source (.group matcher 1)
+              ;; Parse and evaluate the expression
+              expr-tokens (sri.tokenizer/tokenize expr-source)
+              temp-state (parser/create-parse-state expr-tokens)
+              [final-state expr-id] (parser/parse-expression temp-state)
+              expr-result (str (interpret-expression (:ast final-state) expr-id variables))]
+          (recur (str result before-match expr-result) end))
+        ;; No more matches, append the rest
+        (str result (subs content last-end))))))
+
+(defn interpret-word-array-literal
+  "Interpret a word array literal %w(a b c) or %W(a #{expr} c)."
+  [ast entity-id variables]
+  (let [interpolated? (parser/get-component ast entity-id :interpolated)]
+    (if interpolated?
+      ;; Handle %W() with interpolation - preserve word boundaries
+      (let [content (parser/get-component ast entity-id :content)
+            ;; First split by unescaped whitespace to identify word boundaries
+            raw-words (if (empty? content) [] (clojure.string/split content #"\s+"))
+            ;; Then interpolate each word individually and restore escaped spaces
+            interpolated-words (map (fn [word]
+                                     (let [interpolated (interpolate-string word variables)]
+                                       ;; Restore escaped characters (placeholders → actual characters)
+                                       (-> interpolated
+                                           (clojure.string/replace "\u0001" " ")
+                                           (clojure.string/replace "\u0002" "\t")
+                                           (clojure.string/replace "\u0003" "\n"))))
+                                   raw-words)]
+        (->RubyArray (atom (vec interpolated-words))))
+      ;; Handle %w() without interpolation
+      (let [words (parser/get-component ast entity-id :words)]
+        (->RubyArray (atom (vec words)))))))
+
 (defn interpret-array-literal
   "Interpret an array literal like [1, 2, 3]."
   [ast entity-id variables]
@@ -134,8 +179,14 @@
         elements (parser/get-component ast entity-id :elements)
         element-ids (if (seq children) children elements)]
     (if element-ids
-      ;; element-ids should be a collection of entity IDs that need interpretation
-      (->RubyArray (atom (vec (map #(interpret-expression ast % variables) element-ids))))
+      ;; Handle splat operations by flattening the results
+      (let [flattened-elements (mapcat (fn [element-id]
+                                         (let [result (interpret-expression ast element-id variables)]
+                                           (if (= (parser/get-node-type ast element-id) :splat-operation)
+                                             result  ; Splat results are already vectors, flatten them
+                                             [result]))) ; Regular elements become single-item vectors
+                                       element-ids)]
+        (->RubyArray (atom (vec flattened-elements))))
       (->RubyArray (atom [])))))
 
 (defn execute-block
@@ -393,6 +444,29 @@
             :else operand-val)
       (throw (ex-info (str "Unknown unary operator: " operator)
                       {:operator operator})))))
+
+(defn interpret-splat-operation
+  "Interpret a splat operation like *nil or *[1,2,3]."
+  [ast entity-id variables]
+  (let [operand-id (parser/get-component ast entity-id :operand)
+        operand-val (interpret-expression ast operand-id variables)]
+    ;; Splat operation: expand arrays or handle nil
+    (cond
+      (nil? operand-val)
+      ;; *nil expands to no elements (empty list)
+      []
+      
+      (ruby-classes/ruby-array? operand-val)
+      ;; *array expands to the array elements
+      @(:data operand-val)
+      
+      (vector? operand-val)
+      ;; Handle Clojure vectors
+      operand-val
+      
+      :else
+      ;; For other values, splat creates a single-element list
+      [operand-val])))
 
 (defn handle-builtin-class-method
   "Handle built-in class methods like Integer.max, Integer.sqrt."
@@ -1229,10 +1303,12 @@
        :boolean-literal (interpret-literal ast entity-id)
        :nil-literal (interpret-literal ast entity-id)
        :symbol-literal (interpret-literal ast entity-id)
+       :word-array-literal (interpret-word-array-literal ast entity-id variables)
        :array-literal (interpret-array-literal ast entity-id variables)
        :hash-literal (interpret-hash-literal ast entity-id variables)
        :binary-operation (interpret-binary-operation ast entity-id variables)
        :unary-operation (interpret-unary-operation ast entity-id variables)
+       :splat-operation (interpret-splat-operation ast entity-id variables)
        :method-call (interpret-method-call ast entity-id variables)
        :identifier (interpret-identifier ast entity-id variables)
        :assignment-statement (interpret-assignment ast entity-id variables)
@@ -1282,10 +1358,12 @@
        :boolean-literal (interpret-literal ast entity-id)
        :nil-literal (interpret-literal ast entity-id)
        :symbol-literal (interpret-literal ast entity-id)
+       :word-array-literal (interpret-word-array-literal ast entity-id variables)
        :array-literal (interpret-array-literal ast entity-id variables)
        :hash-literal (interpret-hash-literal ast entity-id variables)
        :binary-operation (interpret-binary-operation ast entity-id variables)
        :unary-operation (interpret-unary-operation ast entity-id variables)
+       :splat-operation (interpret-splat-operation ast entity-id variables)
        :method-call (interpret-method-call ast entity-id variables)
        :identifier (interpret-identifier ast entity-id variables)
        :assignment-statement (interpret-assignment ast entity-id variables)
