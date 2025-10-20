@@ -13,7 +13,7 @@
   (respond-to? [_ method-name]
     (contains? #{:to_s :inspect :class :nil? :== :!= :puts :p :print
                  :equal? :object_id :respond_to? :methods :instance_of?
-                 :kind_of? :is_a?} method-name))
+                 :kind_of? :is_a? :should} method-name))
   (get-ruby-method [this method-name]
     (method-lookup this method-name))
 
@@ -80,7 +80,85 @@
     (fn [_ & args]
       (doseq [arg args]
         (print (if (satisfies? RubyInspectable arg) (to-s arg) (str arg))))
-      nil)))
+      nil))
+
+  ;; Spec assertion method
+  (register-method "Object" :should
+    (fn [obj]
+      ;; Return a spec expectation object that handles assertions
+      (reify RubyObject
+        (ruby-class [_] "Spec::Expectations::ObjectExpectation")
+        (ruby-ancestors [_] ["Spec::Expectations::ObjectExpectation" "Object" "Kernel" "BasicObject"])
+        (respond-to? [_ method-name]
+          (contains? #{:== :!= :be_nil :be_true :be_false :be_kind_of} method-name))
+        (get-ruby-method [this method-name]
+          (case method-name
+            :== (fn [_ expected]
+                  (let [result (if (satisfies? RubyObject obj)
+                                 (ruby-eq obj expected) 
+                                 (= obj expected))]
+                    (when-not result
+                      (throw (ex-info (str "Expected " (pr-str expected) " but got " (pr-str obj))
+                                      {:type :assertion-failure
+                                       :expected expected
+                                       :actual obj})))
+                    result))
+            :!= (fn [_ expected]
+                  (let [result (if (satisfies? RubyObject obj)
+                                 (not (ruby-eq obj expected))
+                                 (not= obj expected))]
+                    (when-not result
+                      (throw (ex-info (str "Expected not to equal " (pr-str expected) " but got " (pr-str obj))
+                                      {:type :assertion-failure
+                                       :expected-not expected
+                                       :actual obj})))
+                    result))
+            :be_nil (fn [_]
+                      (let [result (nil? obj)]
+                        (when-not result
+                          (throw (ex-info (str "Expected nil but got " (pr-str obj))
+                                          {:type :assertion-failure
+                                           :expected nil
+                                           :actual obj})))
+                        result))
+            :be_true (fn [_]
+                       (let [result (= obj true)]
+                         (when-not result
+                           (throw (ex-info (str "Expected true but got " (pr-str obj))
+                                           {:type :assertion-failure
+                                            :expected true
+                                            :actual obj})))
+                         result))
+            :be_false (fn [_]
+                        (let [result (= obj false)]
+                          (when-not result
+                            (throw (ex-info (str "Expected false but got " (pr-str obj))
+                                            {:type :assertion-failure
+                                             :expected false
+                                             :actual obj})))
+                          result))
+            :be_kind_of (fn [_ expected-class]
+                          (let [obj-class (if (satisfies? RubyObject obj)
+                                           (ruby-class obj)
+                                           (cond
+                                             (string? obj) "String"
+                                             (integer? obj) "Integer"
+                                             (vector? obj) "Array"
+                                             :else "Object"))
+                                result (= obj-class expected-class)]
+                            (when-not result
+                              (throw (ex-info (str "Expected " expected-class " but got " obj-class)
+                                              {:type :assertion-failure
+                                               :expected expected-class
+                                               :actual obj-class})))
+                            result))
+            nil))
+        
+        RubyComparable
+        (ruby-eq [this expected]
+          (if (satisfies? RubyObject obj)
+            (ruby-eq obj expected) 
+            (= obj expected)))))))
 
 ;; Register methods on namespace load
 (register-object-methods!)

@@ -783,7 +783,7 @@
   {"and" 1 "or" 1             ; Low precedence logical operators  
    "||" 2                     ; Logical OR 
    "&&" 3                     ; Logical AND
-   "=" 4                      ; Assignment
+   "=" 4 "+=" 4 "-=" 4 "*=" 4 "/=" 4  ; Assignment and compound assignment
    ".." 4.5 "..." 4.5
    "==" 5 "!=" 5
    "<" 6 "<=" 6 ">" 6 ">=" 6
@@ -911,19 +911,63 @@
                                          :body body-id)]
       [(assoc final-state :ast new-ast) entity-id])))
 
+(defn parse-for-variables
+  "Parse variable list for for loop: 'i' or 'i, j' or 'i, *rest' or 'i,'."
+  [state]
+  (let [variables (atom [])
+        current-state (atom state)]
+    (loop []
+      (cond
+        ;; Check for splat variable (*rest)
+        (match-token? @current-state :operator "*")
+        (let [[_ state-after-splat] (consume-token @current-state)]
+          (if (match-token? state-after-splat :identifier)
+            (let [[var-token state-after-var] (consume-token state-after-splat)]
+              (swap! variables conj {:type :splat :name (:value var-token)})
+              (reset! current-state state-after-var))
+            ;; Just * without variable name (anonymous splat)
+            (do
+              (swap! variables conj {:type :splat :name nil})
+              (reset! current-state state-after-splat))))
+        
+        ;; Check for regular identifier
+        (match-token? @current-state :identifier)
+        (let [[var-token state-after-var] (consume-token @current-state)]
+          (swap! variables conj {:type :regular :name (:value var-token)})
+          (reset! current-state state-after-var))
+        
+        ;; No more variables
+        :else
+        nil)
+      
+      ;; Check if there's a comma to continue
+      (if (match-token? @current-state :operator ",")
+        (let [[_ state-after-comma] (consume-token @current-state)]
+          (reset! current-state state-after-comma)
+          ;; Continue if there's another variable or splat, otherwise break (trailing comma case)
+          (when (or (match-token? @current-state :identifier)
+                   (match-token? @current-state :operator "*"))
+            (recur)))
+        ;; No comma, we're done
+        nil))
+    
+    ;; Return the final state and variables list
+    [@current-state @variables]))
+
 (defn parse-for-statement
-  "Parse a for loop statement (for item in array)."
+  "Parse a for loop statement (for item in array) with optional destructuring."
   [state]
   (when (match-token? state :keyword "for")
     (let [[_ state-after-for] (consume-token state)
-          [var-token state-after-var] (expect-token state-after-for :identifier)
-          [_ state-after-in] (expect-token state-after-var :keyword "in")
+          ;; Parse variable list (single variable or comma-separated list)
+          [state-after-vars variables] (parse-for-variables state-after-for)
+          [_ state-after-in] (expect-token state-after-vars :keyword "in")
           [state-after-iterable iterable-id] (parse-expression state-after-in)
           state-skip-newlines (skip-separators state-after-iterable)
           [state-after-body body-id] (parse-block state-skip-newlines)
           [_ final-state] (expect-token state-after-body :keyword "end")
           [new-ast entity-id] (create-node (:ast final-state) :for-statement
-                                         :variable (:value var-token)
+                                         :variables variables
                                          :iterable iterable-id
                                          :body body-id)]
       [(assoc final-state :ast new-ast) entity-id])))

@@ -17,13 +17,17 @@
                        idx
                        (let [line (nth lines idx)]
                          (cond
-                           (re-find #"\bdo\b" line) (recur (inc idx) (inc depth))
+                           ;; Count constructs that start blocks: do, if, for, while, case, class, def, begin
+                           (re-find #"\b(do|if|for|while|case|class|def|begin)\b" line) (recur (inc idx) (inc depth))
+                           ;; Count end keywords that close blocks
                            (re-find #"^\s*end\s*$" line) (if (= depth 1)
                                                            idx
                                                            (recur (inc idx) (dec depth)))
                            :else (recur (inc idx) depth)))))
             test-lines (subvec (vec lines) (inc start-idx) end-idx)
-            test-code (str/join "\n" test-lines)]
+            ;; Remove leading and trailing whitespace from each line to normalize indentation
+            normalized-lines (map str/trim test-lines)
+            test-code (str/join "\n" normalized-lines)]
         {:description description
          :code test-code
          :type :it-block
@@ -238,21 +242,33 @@
   "Evaluate a complete test block and check all its assertions"
   [test-code description]
   (try
-    (let [results (execute-line-by-line test-code description)]
-      (if (empty? results)
-        ;; No assertions found, just execute the code to check for syntax errors
-        (do
-          (sri/eval-string test-code)
-          [{:passed? true
-            :result "No assertions to check"
-            :description description}])
-        results))
+    ;; First try to execute the whole block - this works for simple cases and control structures
+    (sri/eval-string test-code)
+    ;; If no exception was thrown, the test passed
+    [{:passed? true
+      :result "Test completed successfully"
+      :description description}]
     
     (catch Exception e
-      [{:passed? false
-        :error (.getMessage e)
-        :description description
-        :test-code test-code}])))
+      ;; Check if this is an assertion failure from .should method
+      (if-let [ex-data (ex-data e)]
+        (if (= (:type ex-data) :assertion-failure)
+          ;; This is a failed assertion
+          [{:passed? false
+            :result (:actual ex-data)
+            :expected (:expected ex-data)
+            :expression (str (:actual ex-data) ".should == " (:expected ex-data))
+            :description description}]
+          ;; This is some other kind of error
+          [{:passed? false
+            :error (.getMessage e)
+            :description description
+            :test-code test-code}])
+        ;; No ex-data, so this is a different kind of error
+        [{:passed? false
+          :error (.getMessage e)
+          :description description
+          :test-code test-code}]))))
 
 (defn run-spec-file
   "Run a single Ruby spec file against SRI"

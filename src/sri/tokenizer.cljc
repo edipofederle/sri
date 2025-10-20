@@ -18,6 +18,10 @@
    ">" :greater-than
    ">=" :greater-equal
    "=" :assign
+   "+=" :plus-assign
+   "-=" :minus-assign
+   "*=" :multiply-assign
+   "/=" :divide-assign
    "..." :exclusive-range
    ".." :inclusive-range
    "." :dot
@@ -560,6 +564,38 @@
           (let [[_ state2] (next-char state1)]
             [(create-token :operator ">=" start-line start-column) state2])
           [(create-token :operator ">" start-line start-column) state1]))
+
+      (= ch \+)
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (= next-ch \=)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "+=" start-line start-column) state2])
+          [(create-token :operator "+" start-line start-column) state1]))
+
+      (= ch \-)
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (= next-ch \=)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "-=" start-line start-column) state2])
+          [(create-token :operator "-" start-line start-column) state1]))
+
+      (= ch \*)
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (= next-ch \=)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "*=" start-line start-column) state2])
+          [(create-token :operator "*" start-line start-column) state1]))
+
+      (= ch \/)
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (= next-ch \=)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "/=" start-line start-column) state2])
+          [(create-token :operator "/" start-line start-column) state1]))
 
       (= ch \@)
       (let [[_ state1] (next-char state)

@@ -9,7 +9,9 @@
             [sri.ruby-hash :refer [->RubyHash ruby-hash? create-empty-hash map->ruby-hash]]
             [sri.ruby-rational :refer [->RubyRational ruby-rational?]]
             [sri.ruby-complex :refer [->RubyComplex ruby-complex?]]
-            [sri.ruby-protocols :refer [to-s]]))
+            [sri.ruby-range :refer [->RubyRange]]
+            [sri.ruby-method-registry :refer [method-lookup]]
+            [sri.ruby-protocols :refer [to-s RubyComparable ruby-eq]]))
 
 
 (declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program)
@@ -375,6 +377,51 @@
                 right-val) ; assignment returns the assigned value
               (throw (ex-info "Invalid left-hand side of assignment"
                               {:left-side left-node-type}))))
+      
+      ;; Compound assignment operators
+      "+=" (let [right-val (interpret-expression ast right-id variables)
+                 left-node-type (parser/get-node-type ast left-id)]
+             (if (= left-node-type :identifier)
+               (let [var-name (parser/get-component ast left-id :value)
+                     current-val (or (get @variables var-name) 0)
+                     new-val (+ current-val right-val)]
+                 (swap! variables assoc var-name new-val)
+                 new-val)
+               (throw (ex-info "Invalid left-hand side of compound assignment"
+                               {:left-side left-node-type}))))
+      
+      "-=" (let [right-val (interpret-expression ast right-id variables)
+                 left-node-type (parser/get-node-type ast left-id)]
+             (if (= left-node-type :identifier)
+               (let [var-name (parser/get-component ast left-id :value)
+                     current-val (or (get @variables var-name) 0)
+                     new-val (- current-val right-val)]
+                 (swap! variables assoc var-name new-val)
+                 new-val)
+               (throw (ex-info "Invalid left-hand side of compound assignment"
+                               {:left-side left-node-type}))))
+      
+      "*=" (let [right-val (interpret-expression ast right-id variables)
+                 left-node-type (parser/get-node-type ast left-id)]
+             (if (= left-node-type :identifier)
+               (let [var-name (parser/get-component ast left-id :value)
+                     current-val (or (get @variables var-name) 1)
+                     new-val (* current-val right-val)]
+                 (swap! variables assoc var-name new-val)
+                 new-val)
+               (throw (ex-info "Invalid left-hand side of compound assignment"
+                               {:left-side left-node-type}))))
+      
+      "/=" (let [right-val (interpret-expression ast right-id variables)
+                 left-node-type (parser/get-node-type ast left-id)]
+             (if (= left-node-type :identifier)
+               (let [var-name (parser/get-component ast left-id :value)
+                     current-val (or (get @variables var-name) 1)
+                     new-val (/ current-val right-val)]
+                 (swap! variables assoc var-name new-val)
+                 new-val)
+               (throw (ex-info "Invalid left-hand side of compound assignment"
+                               {:left-side left-node-type}))))
 
       ;; Regular operators (evaluate both operands)
       (let [left-val (interpret-expression ast left-id variables)
@@ -619,6 +666,24 @@
   "Try to execute a built-in instance method, return ::method-not-found sentinel if method not found."
   [receiver method-name args]
   (case method-name
+    ;; Spec assertion method - works on all objects
+    "should" (reify 
+               ruby-classes/RubyObject
+               (ruby-class [_] "Spec::Expectations::ObjectExpectation")
+               (ruby-ancestors [_] ["Spec::Expectations::ObjectExpectation" "Object" "Kernel" "BasicObject"])
+               (respond-to? [_ method-name]
+                 (contains? #{"==" "!="} method-name))
+               (get-ruby-method [this method-name]
+                 (case method-name
+                   "==" (fn [_ expected]
+                         (= receiver expected))
+                   "!=" (fn [_ expected]
+                         (not= receiver expected))
+                   nil))
+               
+               RubyComparable
+               (ruby-eq [this expected]
+                 (= receiver expected)))
     "length" (cond
                (ruby-array? receiver) (count @(:data receiver))
                (vector? receiver) (count receiver)
@@ -923,6 +988,28 @@
                           imaginary (or (second args) 0)]
                       (->RubyComplex real imaginary)))
 
+        ;; RSpec matchers
+        "be_nil" (reify 
+                   ruby-classes/RubyObject
+                   (ruby-class [_] "Spec::Matchers::BeNil")
+                   (ruby-ancestors [_] ["Spec::Matchers::BeNil" "Object" "Kernel" "BasicObject"])
+                   (respond-to? [_ method-name] false)
+                   (get-ruby-method [this method-name] nil))
+                   
+        "be_true" (reify 
+                    ruby-classes/RubyObject
+                    (ruby-class [_] "Spec::Matchers::BeTrue")
+                    (ruby-ancestors [_] ["Spec::Matchers::BeTrue" "Object" "Kernel" "BasicObject"])
+                    (respond-to? [_ method-name] false)
+                    (get-ruby-method [this method-name] nil))
+                    
+        "be_false" (reify 
+                     ruby-classes/RubyObject
+                     (ruby-class [_] "Spec::Matchers::BeFalse")
+                     (ruby-ancestors [_] ["Spec::Matchers::BeFalse" "Object" "Kernel" "BasicObject"])
+                     (respond-to? [_ method-name] false)
+                     (get-ruby-method [this method-name] nil))
+
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
@@ -951,6 +1038,31 @@
       (method-defined? variables var-name)
       (let [method-def (resolve-method-definition variables var-name)]
         (interpret-user-method ast entity-id variables method-def []))
+
+      ;; Check for RSpec matchers
+      (= var-name "be_nil")
+      (reify 
+        ruby-classes/RubyObject
+        (ruby-class [_] "Spec::Matchers::BeNil")
+        (ruby-ancestors [_] ["Spec::Matchers::BeNil" "Object" "Kernel" "BasicObject"])
+        (respond-to? [_ method-name] false)
+        (get-ruby-method [this method-name] nil))
+        
+      (= var-name "be_true")
+      (reify 
+        ruby-classes/RubyObject
+        (ruby-class [_] "Spec::Matchers::BeTrue")
+        (ruby-ancestors [_] ["Spec::Matchers::BeTrue" "Object" "Kernel" "BasicObject"])
+        (respond-to? [_ method-name] false)
+        (get-ruby-method [this method-name] nil))
+        
+      (= var-name "be_false")
+      (reify 
+        ruby-classes/RubyObject
+        (ruby-class [_] "Spec::Matchers::BeFalse")
+        (ruby-ancestors [_] ["Spec::Matchers::BeFalse" "Object" "Kernel" "BasicObject"])
+        (respond-to? [_ method-name] false)
+        (get-ruby-method [this method-name] nil))
 
       ;; Neither variable nor method found
       :else
@@ -1018,23 +1130,73 @@
               (throw e))))))
     @result))
 
+(defn assign-destructured-variables
+  "Assign values to variables using destructuring assignment.
+   variables-atom: atom containing variable map
+   var-specs: list of variable specifications from parser
+   value: the value to destructure (could be array/vector or single value)"
+  [variables-atom var-specs value]
+  (let [;; Convert value to vector for consistent handling
+        values (cond
+                 (vector? value) value
+                 (ruby-array? value) @(:data value)
+                 :else [value])]
+    
+    (loop [remaining-vars var-specs
+           remaining-values values
+           index 0]
+      (when (seq remaining-vars)
+        (let [var-spec (first remaining-vars)]
+          (case (:type var-spec)
+            :regular
+            (let [var-name (:name var-spec)
+                  var-value (if (< index (count remaining-values))
+                             (nth remaining-values index)
+                             nil)]
+              (when var-name
+                (swap! variables-atom assoc var-name var-value))
+              (recur (rest remaining-vars) remaining-values (inc index)))
+            
+            :splat
+            (let [var-name (:name var-spec)
+                  ;; Collect remaining values into array for splat
+                  splat-values (vec (drop index remaining-values))]
+              (when var-name
+                (swap! variables-atom assoc var-name (->RubyArray (atom splat-values))))
+              ;; Splat consumes all remaining values
+              nil)
+            
+            ;; Unknown type, skip
+            (recur (rest remaining-vars) remaining-values (inc index))))))))
+
 (defn interpret-for-statement
   "Interpret for loop with break/continue support."
   [ast entity-id variables]
-  (let [{:keys [variable iterable body]} (parser/get-components ast entity-id [:variable :iterable :body])
+  (let [components (parser/get-components ast entity-id [:variable :variables :iterable :body])
+        ;; Handle both old format (single variable) and new format (variables list)
+        variables-list (cond
+                         (:variables components) (:variables components)
+                         (:variable components) [{:type :regular :name (:variable components)}]
+                         :else [{:type :regular :name "item"}]) ; fallback
+        iterable (:iterable components)
+        body (:body components)
         iterable-value (interpret-expression ast iterable variables)
         result (atom nil)
         should-break (atom false)]
-    (when (or (vector? iterable-value) (ruby-array? iterable-value))
-      (let [items-to-iterate (if (ruby-array? iterable-value)
-                               @(:data iterable-value)
-                               iterable-value)]
+    (when (or (vector? iterable-value) (ruby-array? iterable-value) (instance? sri.ruby_range.RubyRange iterable-value))
+      (let [items-to-iterate (cond
+                               (ruby-array? iterable-value) @(:data iterable-value)
+                               (instance? sri.ruby_range.RubyRange iterable-value)
+                               ;; Convert range to array using its to_a method
+                               (let [to-a-method (method-lookup iterable-value :to_a)]
+                                 (to-a-method iterable-value))
+                               :else iterable-value)]
         (loop [items items-to-iterate]
         (when (and (seq items) (not @should-break))
           (let [item (first items)]
             (try
-              ;; Set the loop variable to the current item
-              (swap! variables assoc variable item)
+              ;; Set the loop variables using destructuring
+              (assign-destructured-variables variables variables-list item)
               (reset! result (interpret-expression ast body variables))
               (catch clojure.lang.ExceptionInfo e
                 (let [ex-data (ex-data e)]
