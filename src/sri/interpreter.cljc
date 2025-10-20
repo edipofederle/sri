@@ -1130,6 +1130,34 @@
               (throw e))))))
     @result))
 
+(defn interpret-assignment-to-expression
+  "Assign a value to an assignable expression (like arr[1] = value)."
+  [ast expr-id value variables]
+  (let [expr-type (parser/get-node-type ast expr-id)]
+    (case expr-type
+      :array-access
+      ;; Handle array element assignment: arr[1] = value
+      (let [array-id (parser/get-component ast expr-id :receiver)
+            index-id (parser/get-component ast expr-id :index)
+            array-obj (interpret-expression ast array-id variables)
+            index-val (interpret-expression ast index-id variables)]
+        (cond
+          (ruby-array? array-obj)
+          (swap! (:data array-obj) assoc index-val value)
+          
+          (vector? array-obj)
+          ;; For regular vectors, we can't mutate them directly
+          ;; This is a limitation - Ruby arrays are mutable but Clojure vectors aren't
+          (throw (ex-info "Cannot assign to immutable vector" {:array array-obj :index index-val :value value}))
+          
+          :else
+          (throw (ex-info "Cannot assign to non-array object" {:object array-obj :index index-val :value value}))))
+      
+      ;; Add other assignable expression types here as needed
+      :else
+      (throw (ex-info (str "Assignment to " expr-type " not supported in for loops")
+                     {:expression-type expr-type :value value})))))
+
 (defn assign-destructured-variables
   "Assign values to variables using destructuring assignment.
    variables-atom: atom containing variable map
@@ -1142,42 +1170,63 @@
                  (ruby-array? value) @(:data value)
                  :else [value])]
     
-    (loop [remaining-vars var-specs
-           remaining-values values
-           index 0]
-      (when (seq remaining-vars)
-        (let [var-spec (first remaining-vars)]
-          (case (:type var-spec)
-            :regular
-            (let [var-name (:name var-spec)
-                  var-value (if (< index (count remaining-values))
-                             (nth remaining-values index)
-                             nil)]
-              (when var-name
-                (swap! variables-atom assoc var-name var-value))
-              (recur (rest remaining-vars) remaining-values (inc index)))
-            
-            :splat
-            (let [var-name (:name var-spec)
-                  ;; Collect remaining values into array for splat
-                  splat-values (vec (drop index remaining-values))]
-              (when var-name
-                (swap! variables-atom assoc var-name (->RubyArray (atom splat-values))))
-              ;; Splat consumes all remaining values
-              nil)
-            
-            ;; Unknown type, skip
-            (recur (rest remaining-vars) remaining-values (inc index))))))))
+    ;; Count variables after splat to reserve end positions
+    (let [vars-after-splat (count (take-while #(not= (:type %) :splat) (reverse var-specs)))]
+      (loop [remaining-vars var-specs
+             index 0]
+        (when (seq remaining-vars)
+          (let [var-spec (first remaining-vars)]
+            (case (:type var-spec)
+              :regular
+              (let [var-name (:name var-spec)
+                    var-value (if (< index (count values))
+                               (nth values index)
+                               nil)]
+                (when var-name
+                  (swap! variables-atom assoc var-name var-value))
+                (recur (rest remaining-vars) (inc index)))
+              
+              :instance-variable
+              (let [var-name (:name var-spec)
+                    var-value (if (< index (count values))
+                               (nth values index)
+                               nil)]
+                (when var-name
+                  ;; Use instance variable assignment logic
+                  (if-let [instance (get @variables-atom "self")]
+                    (if (and (map? instance) (:instance-variables instance))
+                      (swap! (:instance-variables instance) assoc var-name var-value)
+                      ;; Create default instance for top-level scope
+                      (let [default-instance {:instance-variables (atom {var-name var-value})}]
+                        (swap! variables-atom assoc "self" default-instance)))
+                    ;; No self found, create default instance for top-level scope
+                    (let [default-instance {:instance-variables (atom {var-name var-value})}]
+                      (swap! variables-atom assoc "self" default-instance))))
+                (recur (rest remaining-vars) (inc index)))
+              
+              :splat
+              (let [var-name (:name var-spec)
+                    ;; Calculate splat range: from current index to (total - vars after splat)
+                    end-index (max index (- (count values) vars-after-splat))
+                    splat-values (vec (subvec values index end-index))]
+                (when var-name
+                  (swap! variables-atom assoc var-name (->RubyArray (atom splat-values))))
+                ;; Continue with variables after splat, adjusting index
+                (recur (rest remaining-vars) end-index))
+              
+              ;; Unknown type, skip
+              (recur (rest remaining-vars) (inc index)))))))))
 
 (defn interpret-for-statement
   "Interpret for loop with break/continue support."
   [ast entity-id variables]
-  (let [components (parser/get-components ast entity-id [:variable :variables :iterable :body])
-        ;; Handle both old format (single variable) and new format (variables list)
+  (let [components (parser/get-components ast entity-id [:variable :variables :target-expression :iterable :body])
+        ;; Handle three cases: variables list, single variable, or target expression
         variables-list (cond
                          (:variables components) (:variables components)
                          (:variable components) [{:type :regular :name (:variable components)}]
-                         :else [{:type :regular :name "item"}]) ; fallback
+                         :else nil) ; Will use target-expression instead
+        target-expression (:target-expression components)
         iterable (:iterable components)
         body (:body components)
         iterable-value (interpret-expression ast iterable variables)
@@ -1195,8 +1244,13 @@
         (when (and (seq items) (not @should-break))
           (let [item (first items)]
             (try
-              ;; Set the loop variables using destructuring
-              (assign-destructured-variables variables variables-list item)
+              ;; Set the loop variables - either destructuring or target expression
+              (if variables-list
+                ;; Use destructuring assignment for variable lists
+                (assign-destructured-variables variables variables-list item)
+                ;; Use expression assignment for target expressions (e.g., arr[1])
+                (when target-expression
+                  (interpret-assignment-to-expression ast target-expression item variables)))
               (reset! result (interpret-expression ast body variables))
               (catch clojure.lang.ExceptionInfo e
                 (let [ex-data (ex-data e)]

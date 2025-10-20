@@ -142,7 +142,7 @@
   (when (match-token? state :integer)
     (let [[token new-state] (consume-token state)
           [new-ast entity-id] (create-node (:ast new-state) :integer-literal
-                                          :value (try 
+                                          :value (try
                                                    (Integer/parseInt (:value token))
                                                    (catch NumberFormatException _
                                                      (BigInteger. (:value token) 10)))
@@ -166,7 +166,7 @@
     (let [[token new-state] (consume-token state)
           number-str (:value token)
           [numerator denominator] (if (clojure.string/includes? number-str ".")
-                                    ;; Handle float rationals like "1.0" -> 1/1, "0.5" -> 1/2  
+                                    ;; Handle float rationals like "1.0" -> 1/1, "0.5" -> 1/2
                                     (let [parts (clojure.string/split number-str #"\.")
                                           integer-part (first parts)
                                           decimal-part (second parts)
@@ -180,7 +180,7 @@
                                                       (BigInteger. combined-str 10))]
                                       [numerator denominator])
                                     ;; Handle integer rationals like "3" -> 3/1
-                                    [(try 
+                                    [(try
                                        (Integer/parseInt number-str)
                                        (catch NumberFormatException _
                                          (BigInteger. number-str 10))) 1])
@@ -200,7 +200,7 @@
                       ;; Handle float complex literals like "5.0" -> 5.0i
                       (Double/parseDouble number-str)
                       ;; Handle integer complex literals like "5" -> 5i
-                      (try 
+                      (try
                         (Integer/parseInt number-str)
                         (catch NumberFormatException _
                           (BigInteger. number-str 10))))
@@ -274,7 +274,7 @@
                                          :interpolated false
                                          :position {:line (:line token) :column (:column token)})]
       [(assoc state-after-token :ast new-ast) entity-id])
-    
+
     (match-token? state :interpolated-word-array)
     (let [[token state-after-token] (consume-token state)
           content (:value token)
@@ -441,7 +441,7 @@
             nil))
         ;; Not a block, return nil so parse-hash-literal can handle it
         nil))
-    
+
     ;; Handle do end blocks
     (match-token? state :keyword "do")
     (let [[do-token state-after-do] (consume-token state)
@@ -481,7 +481,7 @@
             (println "DEBUG: Error parsing do/end block:" (.getMessage e))
             (flush))
           nil)))
-    
+
     ;; Not a block at all
     :else nil))
 
@@ -575,7 +575,7 @@
         [state-after-first-value first-value-id] (parse-expression state-after-arrow)
         ;; Start collecting pairs
         initial-pairs [[first-key-id first-value-id]]]
-    
+
     ;; Continue parsing pairs until we hit ]
     (loop [current-state state-after-first-value
            pairs initial-pairs]
@@ -585,7 +585,7 @@
                                              :pairs pairs
                                              :position {:line (:line arrow-token) :column (:column arrow-token)})]
           [(assoc current-state :ast new-ast) entity-id])
-        
+
         (match-token? current-state :operator ",")
         (let [[_ state-after-comma] (consume-token current-state)]
           (if (match-token? state-after-comma :operator "]")
@@ -607,7 +607,7 @@
                   [state-after-value value-id] (parse-expression state-after-arrow)
                   new-pairs (conj pairs [key-id value-id])]
               (recur state-after-value new-pairs))))
-        
+
         :else
         (throw (ex-info "Expected ',' or ']' in hash literal"
                        {:token (current-token current-state)}))))))
@@ -626,7 +626,7 @@
                                        (cond
                                          (match-token? state-after-element :operator "]")
                                          [new-elements state-after-element]
-                                         
+
                                          ;; Check for inline hash: if we see => or : after any element, parse as hash
                                          (or (match-token? state-after-element :operator "=>")
                                              (match-token? state-after-element :operator ":"))
@@ -635,7 +635,7 @@
                                                ;; Combine previous elements with the hash
                                                all-elements (conj (vec (butlast new-elements)) hash-id)]
                                            [all-elements hash-state])
-                                         
+
                                          (match-token? state-after-element :operator ",")
                                          (let [[_ state-after-comma] (consume-token state-after-element)]
                                            (if (match-token? state-after-comma :operator "]")
@@ -780,8 +780,8 @@
 (def operator-precedence
   "Map of operator symbols to their precedence level.
    Higher numbers = higher precedence."
-  {"and" 1 "or" 1             ; Low precedence logical operators  
-   "||" 2                     ; Logical OR 
+  {"and" 1 "or" 1             ; Low precedence logical operators
+   "||" 2                     ; Logical OR
    "&&" 3                     ; Logical AND
    "=" 4 "+=" 4 "-=" 4 "*=" 4 "/=" 4  ; Assignment and compound assignment
    ".." 4.5 "..." 4.5
@@ -929,28 +929,35 @@
             (do
               (swap! variables conj {:type :splat :name nil})
               (reset! current-state state-after-splat))))
-        
+
         ;; Check for regular identifier
         (match-token? @current-state :identifier)
         (let [[var-token state-after-var] (consume-token @current-state)]
           (swap! variables conj {:type :regular :name (:value var-token)})
           (reset! current-state state-after-var))
-        
+
+        ;; Check for instance variable
+        (match-token? @current-state :instance-variable)
+        (let [[var-token state-after-var] (consume-token @current-state)]
+          (swap! variables conj {:type :instance-variable :name (:value var-token)})
+          (reset! current-state state-after-var))
+
         ;; No more variables
         :else
         nil)
-      
+
       ;; Check if there's a comma to continue
       (if (match-token? @current-state :operator ",")
         (let [[_ state-after-comma] (consume-token @current-state)]
           (reset! current-state state-after-comma)
           ;; Continue if there's another variable or splat, otherwise break (trailing comma case)
           (when (or (match-token? @current-state :identifier)
+                   (match-token? @current-state :instance-variable)
                    (match-token? @current-state :operator "*"))
             (recur)))
         ;; No comma, we're done
         nil))
-    
+
     ;; Return the final state and variables list
     [@current-state @variables]))
 
@@ -958,19 +965,68 @@
   "Parse a for loop statement (for item in array) with optional destructuring."
   [state]
   (when (match-token? state :keyword "for")
-    (let [[_ state-after-for] (consume-token state)
-          ;; Parse variable list (single variable or comma-separated list)
-          [state-after-vars variables] (parse-for-variables state-after-for)
-          [_ state-after-in] (expect-token state-after-vars :keyword "in")
-          [state-after-iterable iterable-id] (parse-expression state-after-in)
-          state-skip-newlines (skip-separators state-after-iterable)
-          [state-after-body body-id] (parse-block state-skip-newlines)
-          [_ final-state] (expect-token state-after-body :keyword "end")
-          [new-ast entity-id] (create-node (:ast final-state) :for-statement
-                                         :variables variables
-                                         :iterable iterable-id
-                                         :body body-id)]
-      [(assoc final-state :ast new-ast) entity-id])))
+    (let [[_ state-after-for] (consume-token state)]
+      ;; Check if this looks like a complex expression (identifier followed by [ or .)
+      ;; Parse as expression only for complex cases like arr[1] or obj.attr
+      (let [looks-like-complex-expr? (and (match-token? state-after-for :identifier)
+                                          ;; Look ahead to see if there's [ or . after identifier
+                                          (let [[_ state-after-id] (consume-token state-after-for)]
+                                            (or (match-token? state-after-id :operator "[")
+                                                (match-token? state-after-id :operator "."))))]
+        (if looks-like-complex-expr?
+          ;; Try parsing as expression for complex cases like arr[1]
+          (if-let [[state-after-expr expr-id] (try
+                                               (parse-expression state-after-for)
+                                               (catch Exception _ nil))]
+          ;; Check if we found 'in' after the expression
+          (if (match-token? state-after-expr :keyword "in")
+            ;; Single assignable expression case: for arr[1] in array
+            (let [[_ state-after-in] (consume-token state-after-expr)
+                  [state-after-iterable iterable-id] (parse-expression state-after-in)
+                  state-skip-newlines (skip-separators state-after-iterable)
+                  [state-after-body body-id] (parse-block state-skip-newlines)
+                  [_ final-state] (expect-token state-after-body :keyword "end")
+                  [new-ast entity-id] (create-node (:ast final-state) :for-statement
+                                                 :target-expression expr-id
+                                                 :iterable iterable-id
+                                                 :body body-id)]
+              [(assoc final-state :ast new-ast) entity-id])
+            ;; Not followed by 'in', fall back to variable parsing
+            (let [[state-after-vars variables] (parse-for-variables state-after-for)
+                  [_ state-after-in] (expect-token state-after-vars :keyword "in")
+                  [state-after-iterable iterable-id] (parse-expression state-after-in)
+                  state-skip-newlines (skip-separators state-after-iterable)
+                  [state-after-body body-id] (parse-block state-skip-newlines)
+                  [_ final-state] (expect-token state-after-body :keyword "end")
+                  [new-ast entity-id] (create-node (:ast final-state) :for-statement
+                                                 :variables variables
+                                                 :iterable iterable-id
+                                                 :body body-id)]
+              [(assoc final-state :ast new-ast) entity-id]))
+          ;; Failed to parse as expression, use variable list parsing
+          (let [[state-after-vars variables] (parse-for-variables state-after-for)
+                [_ state-after-in] (expect-token state-after-vars :keyword "in")
+                [state-after-iterable iterable-id] (parse-expression state-after-in)
+                state-skip-newlines (skip-separators state-after-iterable)
+                [state-after-body body-id] (parse-block state-skip-newlines)
+                [_ final-state] (expect-token state-after-body :keyword "end")
+                [new-ast entity-id] (create-node (:ast final-state) :for-statement
+                                               :variables variables
+                                               :iterable iterable-id
+                                               :body body-id)]
+            [(assoc final-state :ast new-ast) entity-id]))
+        ;; Simple identifier or instance variable case - use variable parsing
+        (let [[state-after-vars variables] (parse-for-variables state-after-for)
+              [_ state-after-in] (expect-token state-after-vars :keyword "in")
+              [state-after-iterable iterable-id] (parse-expression state-after-in)
+              state-skip-newlines (skip-separators state-after-iterable)
+              [state-after-body body-id] (parse-block state-skip-newlines)
+              [_ final-state] (expect-token state-after-body :keyword "end")
+              [new-ast entity-id] (create-node (:ast final-state) :for-statement
+                                             :variables variables
+                                             :iterable iterable-id
+                                             :body body-id)]
+          [(assoc final-state :ast new-ast) entity-id]))))))
 
 (defn parse-until-statement
   "Parse an until loop statement."
@@ -1056,20 +1112,20 @@
           ;; Parse when clause
           (match-token? current-state :keyword "when")
           (let [[state-after-when new-ast when-clause-id] (parse-when-clause current-state current-ast)]
-            (recur (conj when-clause-ids when-clause-id) 
+            (recur (conj when-clause-ids when-clause-id)
                    state-after-when
                    new-ast
                    else-id))
-          
+
           ;; Parse else clause
           (match-token? current-state :keyword "else")
           (let [[_ state-after-else] (consume-token current-state)
                 [state-after-else-body else-body-id] (parse-block state-after-else)]
-            (recur when-clause-ids 
+            (recur when-clause-ids
                    state-after-else-body
                    (:ast state-after-else-body)
                    else-body-id))
-          
+
           ;; End case
           (match-token? current-state :keyword "end")
           (let [[_ final-state] (consume-token current-state)
@@ -1078,7 +1134,7 @@
                                                :when-clauses when-clause-ids
                                                :else-clause else-id)]
             [(assoc final-state :ast new-ast) entity-id])
-          
+
           :else
           (throw (ex-info "Expected 'when', 'else', or 'end' in case statement"
                          {:token (current-token current-state)})))))))
@@ -1403,7 +1459,7 @@
         (let [[symbol-token next-state] (consume-token current-state)]
           (recur next-state (conj attributes (:value symbol-token)) false))
 
-        ;; Found comma when not expecting symbol  
+        ;; Found comma when not expecting symbol
         (and (not expecting-symbol) (match-token? current-state :operator ","))
         (let [[_ next-state] (consume-token current-state)]
           (recur next-state attributes true))
