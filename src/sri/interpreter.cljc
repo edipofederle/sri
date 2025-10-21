@@ -1299,7 +1299,9 @@
         (catch clojure.lang.ExceptionInfo e
           (let [ex-data (ex-data e)]
             (case (:type ex-data)
-              :break (reset! running? false)
+              :break (do
+                       (reset! running? false)
+                       (reset! result (:value ex-data)))
               :continue nil  ; Just continue to next iteration
               (throw e))))))
     @result))
@@ -1349,9 +1351,13 @@
         (interpret-expression ast else-clause variables)))))
 
 (defn interpret-break-statement
-  "Interpret a break statement - throws a control flow exception."
+  "Interpret a break statement - throws a control flow exception with optional value."
   [ast entity-id variables]
-  (throw (ex-info "break" {:type :break})))
+  (let [value-id (parser/get-component ast entity-id :value)]
+    (if value-id
+      (let [break-value (interpret-expression ast value-id variables)]
+        (throw (ex-info "break" {:type :break :value break-value})))
+      (throw (ex-info "break" {:type :break :value nil})))))
 
 (defn interpret-continue-statement
   "Interpret a continue statement - throws a control flow exception."

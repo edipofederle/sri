@@ -6,6 +6,9 @@
   (:require [sri.tokenizer :as tokenizer])
   (:require [clojure.string]))
 
+;; Forward declarations
+(declare parse-loop-statement)
+
 (defonce ^:private entity-counter (atom 0))
 
 (defn create-entity-id
@@ -705,6 +708,7 @@
       (parse-array-literal state)
       (parse-hash-literal state)
       (parse-case-statement state)
+      (parse-loop-statement state)
       (when (match-token? state :instance-variable)
         (let [[var-token state-after-var] (consume-token state)
               [new-ast entity-id] (create-node (:ast state-after-var) :instance-variable-access
@@ -1272,13 +1276,27 @@
       [(assoc state-after-expr :ast new-ast) entity-id])))
 
 (defn parse-break-statement
-  "Parse a break statement."
+  "Parse a break statement with optional value."
   [state]
   (when (match-token? state :keyword "break")
     (let [[break-token state-after-break] (consume-token state)
-          [new-ast entity-id] (create-node (:ast state-after-break) :break-statement
-                                         :position {:line (:line break-token) :column (:column break-token)})]
-      [(assoc state-after-break :ast new-ast) entity-id])))
+          ;; Check if there's an expression after break
+          state-after-skip (skip-separators state-after-break)
+          next-token (current-token state-after-skip)]
+      (if (and next-token 
+               (not (#{:newline :operator} (:type next-token)))
+               (not (and (= (:type next-token) :keyword) 
+                        (#{"end" "else" "elsif" "when" "rescue" "ensure" "if"} (:value next-token)))))
+        ;; Parse the break value expression
+        (let [[state-after-expr expr-id] (parse-expression state-after-skip)
+              [new-ast entity-id] (create-node (:ast state-after-expr) :break-statement
+                                             :value expr-id
+                                             :position {:line (:line break-token) :column (:column break-token)})]
+          [(assoc state-after-expr :ast new-ast) entity-id])
+        ;; No expression, just break
+        (let [[new-ast entity-id] (create-node (:ast state-after-break) :break-statement
+                                             :position {:line (:line break-token) :column (:column break-token)})]
+          [(assoc state-after-break :ast new-ast) entity-id])))))
 
 (defn parse-continue-statement
   "Parse a continue statement."
