@@ -1113,6 +1113,14 @@
       (when then-branch (interpret-expression ast then-branch variables))
       (when else-branch (interpret-expression ast else-branch variables)))))
 
+(defn interpret-postfix-if
+  "Interpret postfix if modifier (statement if condition)."
+  [ast entity-id variables]
+  (let [{:keys [statement condition]} (parser/get-components ast entity-id [:statement :condition])
+        condition-val (interpret-expression ast condition variables)]
+    (when condition-val
+      (interpret-expression ast statement variables))))
+
 (defn interpret-while-statement
   "Interpret while loop with break/continue support."
   [ast entity-id variables]
@@ -1537,6 +1545,7 @@
        :method-definition (interpret-method-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables)
        :if-statement (interpret-if-statement ast entity-id variables)
+       :postfix-if (interpret-postfix-if ast entity-id variables)
        :while-statement (interpret-while-statement ast entity-id variables)
        :for-statement (interpret-for-statement ast entity-id variables)
        :until-statement (interpret-until-statement ast entity-id variables)
@@ -1592,6 +1601,7 @@
        :method-definition (interpret-method-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables opts)
        :if-statement (interpret-if-statement ast entity-id variables)
+       :postfix-if (interpret-postfix-if ast entity-id variables)
        :while-statement (interpret-while-statement ast entity-id variables)
        :for-statement (interpret-for-statement ast entity-id variables)
        :until-statement (interpret-until-statement ast entity-id variables)

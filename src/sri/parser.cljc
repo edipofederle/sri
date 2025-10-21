@@ -1507,31 +1507,46 @@
   (parse-statement state))
 
 
+(defn parse-postfix-if
+  "Parse a postfix if modifier (statement if condition)."
+  [state stmt-id]
+  (if (match-token? state :keyword "if")
+    (let [[_ state-after-if] (consume-token state)
+          [state-after-condition condition-id] (parse-expression state-after-if)
+          [new-ast postfix-id] (create-node (:ast state-after-condition) :postfix-if
+                                          :statement stmt-id
+                                          :condition condition-id)]
+      [(assoc state-after-condition :ast new-ast) postfix-id])
+    [state stmt-id]))
+
 (defn parse-statement
   "Parse a statement (expression or control flow)."
   [state]
-  (or (parse-class-definition state)
-      (parse-method-definition state)
-      (parse-if-statement state)
-      (parse-while-statement state)
-      (parse-for-statement state)
-      (parse-until-statement state)
-      (parse-case-statement state)
-      (parse-return-statement state)
-      (parse-break-statement state)
-      (parse-continue-statement state)
-      (parse-next-statement state)
-      (parse-loop-statement state)
-      (parse-instance-variable-assignment state)
-      (parse-class-variable-assignment state)
-      (parse-indexed-assignment-statement state)
-      (parse-method-assignment-statement state)
-      (parse-attr-accessor-statement state)
-      (parse-attr-reader-statement state)
-      (parse-attr-writer-statement state)
-      (parse-multiple-assignment-statement state)
-      (parse-assignment-statement state)
-      (parse-expression state)))
+  (when-let [result (or (parse-class-definition state)
+                        (parse-method-definition state)
+                        (parse-if-statement state)
+                        (parse-while-statement state)
+                        (parse-for-statement state)
+                        (parse-until-statement state)
+                        (parse-case-statement state)
+                        (parse-return-statement state)
+                        (parse-break-statement state)
+                        (parse-continue-statement state)
+                        (parse-next-statement state)
+                        (parse-loop-statement state)
+                        (parse-instance-variable-assignment state)
+                        (parse-class-variable-assignment state)
+                        (parse-indexed-assignment-statement state)
+                        (parse-method-assignment-statement state)
+                        (parse-attr-accessor-statement state)
+                        (parse-attr-reader-statement state)
+                        (parse-attr-writer-statement state)
+                        (parse-multiple-assignment-statement state)
+                        (parse-assignment-statement state)
+                        (parse-expression state))]
+    (let [[state-after-stmt stmt-id] result]
+      ;; Check for postfix modifiers after parsing the statement
+      (parse-postfix-if state-after-stmt stmt-id))))
 
 (defn parse-expression
   "Parse any expression with binary operations and precedence."

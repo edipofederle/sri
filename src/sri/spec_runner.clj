@@ -17,8 +17,11 @@
                        idx
                        (let [line (nth lines idx)]
                          (cond
-                           ;; Count constructs that start blocks: do, if, for, while, case, class, def, begin
-                           (re-find #"\b(do|if|for|while|case|class|def|begin)\b" line) (recur (inc idx) (inc depth))
+                           ;; Count constructs that start blocks: do, for, while, case, class, def, begin
+                           ;; Also count if when it starts a statement (not postfix if)
+                           (or (re-find #"\b(do|for|while|case|class|def|begin)\b" line)
+                               (re-find #"^\s*if\b" line)) ; Only count if at start of statement
+                           (recur (inc idx) (inc depth))
                            ;; Count end keywords that close blocks
                            (re-find #"^\s*end\s*$" line) (if (= depth 1)
                                                            idx
