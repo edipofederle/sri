@@ -359,6 +359,37 @@
         :else
         (throw (ex-info "Assignment to invalid type" {:receiver current-receiver :index index-val}))))))
 
+(defn extract-class-name
+  "Extract class name from a class object or return the string as-is."
+  [class-obj]
+  (if (and (map? class-obj) (:name class-obj))
+    (:name class-obj)
+    class-obj))
+
+(defn create-rspec-matcher
+  "Create a simple RSpec matcher with the given class name."
+  [class-name]
+  (reify
+    ruby-classes/RubyObject
+    (ruby-class [_] (str "Spec::Matchers::" class-name))
+    (ruby-ancestors [_] [(str "Spec::Matchers::" class-name) "Object" "Kernel" "BasicObject"])
+    (respond-to? [_ method-name] false)
+    (get-ruby-method [this method-name] nil)))
+
+(defn handle-compound-assignment
+  "Handle compound assignment operations (+=, -=, *=, /=) with reduced duplication."
+  [ast left-id right-id variables operation default-value]
+  (let [right-val (interpret-expression ast right-id variables)
+        left-node-type (parser/get-node-type ast left-id)]
+    (if (= left-node-type :identifier)
+      (let [var-name (parser/get-component ast left-id :value)
+            current-val (or (get @variables var-name) default-value)
+            new-val (operation current-val right-val)]
+        (swap! variables assoc var-name new-val)
+        new-val)
+      (throw (ex-info "Invalid left-hand side of compound assignment"
+                      {:left-side left-node-type})))))
+
 (defn interpret-binary-operation
   "Interpret a binary operation like 1 + 2."
   [ast entity-id variables]
@@ -384,7 +415,7 @@
              (if left-val
                left-val
                (interpret-expression ast right-id variables)))
-      
+
       ;; Assignment operator (special handling)
       "=" (let [right-val (interpret-expression ast right-id variables)
                 left-node-type (parser/get-node-type ast left-id)]
@@ -394,51 +425,12 @@
                 right-val) ; assignment returns the assigned value
               (throw (ex-info "Invalid left-hand side of assignment"
                               {:left-side left-node-type}))))
-      
+
       ;; Compound assignment operators
-      "+=" (let [right-val (interpret-expression ast right-id variables)
-                 left-node-type (parser/get-node-type ast left-id)]
-             (if (= left-node-type :identifier)
-               (let [var-name (parser/get-component ast left-id :value)
-                     current-val (or (get @variables var-name) 0)
-                     new-val (+ current-val right-val)]
-                 (swap! variables assoc var-name new-val)
-                 new-val)
-               (throw (ex-info "Invalid left-hand side of compound assignment"
-                               {:left-side left-node-type}))))
-      
-      "-=" (let [right-val (interpret-expression ast right-id variables)
-                 left-node-type (parser/get-node-type ast left-id)]
-             (if (= left-node-type :identifier)
-               (let [var-name (parser/get-component ast left-id :value)
-                     current-val (or (get @variables var-name) 0)
-                     new-val (- current-val right-val)]
-                 (swap! variables assoc var-name new-val)
-                 new-val)
-               (throw (ex-info "Invalid left-hand side of compound assignment"
-                               {:left-side left-node-type}))))
-      
-      "*=" (let [right-val (interpret-expression ast right-id variables)
-                 left-node-type (parser/get-node-type ast left-id)]
-             (if (= left-node-type :identifier)
-               (let [var-name (parser/get-component ast left-id :value)
-                     current-val (or (get @variables var-name) 1)
-                     new-val (* current-val right-val)]
-                 (swap! variables assoc var-name new-val)
-                 new-val)
-               (throw (ex-info "Invalid left-hand side of compound assignment"
-                               {:left-side left-node-type}))))
-      
-      "/=" (let [right-val (interpret-expression ast right-id variables)
-                 left-node-type (parser/get-node-type ast left-id)]
-             (if (= left-node-type :identifier)
-               (let [var-name (parser/get-component ast left-id :value)
-                     current-val (or (get @variables var-name) 1)
-                     new-val (/ current-val right-val)]
-                 (swap! variables assoc var-name new-val)
-                 new-val)
-               (throw (ex-info "Invalid left-hand side of compound assignment"
-                               {:left-side left-node-type}))))
+      "+=" (handle-compound-assignment ast left-id right-id variables + 0)
+      "-=" (handle-compound-assignment ast left-id right-id variables - 0)
+      "*=" (handle-compound-assignment ast left-id right-id variables * 1)
+      "/=" (handle-compound-assignment ast left-id right-id variables / 1)
 
       ;; Regular operators (evaluate both operands)
       (let [left-val (interpret-expression ast left-id variables)
@@ -519,15 +511,15 @@
       (nil? operand-val)
       ;; *nil expands to no elements (empty list)
       []
-      
+
       (ruby-classes/ruby-array? operand-val)
       ;; *array expands to the array elements
       @(:data operand-val)
-      
+
       (vector? operand-val)
       ;; Handle Clojure vectors
       operand-val
-      
+
       :else
       ;; For other values, splat creates a single-element list
       [operand-val])))
@@ -554,6 +546,13 @@
     ["String" "new"] (if (empty? args)
                       (ruby-classes/create-string "")
                       (ruby-classes/create-string (first args)))
+    ["Module" "new"] (if (empty? args)
+                      {:name nil
+                       :type :module
+                       :methods (atom {})
+                       :ast nil
+                       :body-id nil}
+                      (throw (ex-info "Module.new does not accept arguments" {:args args})))
     (throw (ex-info (str "Unknown Ruby class method: " class-name "." method-name)
                     {:class class-name :method method-name}))))
 
@@ -684,23 +683,42 @@
   [receiver method-name args]
   (case method-name
     ;; Spec assertion method - works on all objects
-    "should" (reify 
+    ;; hack for now to play with ruby specs
+    ;; TODO to be removed
+    "should" (reify
                ruby-classes/RubyObject
                (ruby-class [_] "Spec::Expectations::ObjectExpectation")
                (ruby-ancestors [_] ["Spec::Expectations::ObjectExpectation" "Object" "Kernel" "BasicObject"])
                (respond-to? [_ method-name]
-                 (contains? #{"==" "!="} method-name))
+                 (contains? #{"==" "!=" "be_an_instance_of"} method-name))
                (get-ruby-method [this method-name]
                  (case method-name
                    "==" (fn [_ expected]
                          (= receiver expected))
                    "!=" (fn [_ expected]
                          (not= receiver expected))
+                   "be_an_instance_of" (fn [_ expected-class]
+                                        (let [actual-class (ruby-class-name receiver)
+                                              expected-class-name (extract-class-name expected-class)]
+                                          (= actual-class expected-class-name)))
                    nil))
-               
-               RubyComparable
+
+               ruby-classes/RubyInspectable
+               (to-s [_] "#<Spec::Expectations::ObjectExpectation>")
+               (inspect [_] "#<Spec::Expectations::ObjectExpectation>")
+
+               ruby-classes/RubyComparable
                (ruby-eq [this expected]
                  (= receiver expected)))
+
+    ;; hack for now to play with ruby specs
+    ;; TODO to be removed
+    "be_an_instance_of" (if (= 1 (count args))
+                         (let [expected-class (first args)
+                               actual-class (ruby-class-name receiver)
+                               expected-class-name (extract-class-name expected-class)]
+                           (= actual-class expected-class-name))
+                         ::method-not-found)
     "length" (cond
                (ruby-array? receiver) (count @(:data receiver))
                (vector? receiver) (count receiver)
@@ -1007,26 +1025,18 @@
                       (->RubyComplex real imaginary)))
 
         ;; RSpec matchers
-        "be_nil" (reify 
-                   ruby-classes/RubyObject
-                   (ruby-class [_] "Spec::Matchers::BeNil")
-                   (ruby-ancestors [_] ["Spec::Matchers::BeNil" "Object" "Kernel" "BasicObject"])
-                   (respond-to? [_ method-name] false)
-                   (get-ruby-method [this method-name] nil))
-                   
-        "be_true" (reify 
-                    ruby-classes/RubyObject
-                    (ruby-class [_] "Spec::Matchers::BeTrue")
-                    (ruby-ancestors [_] ["Spec::Matchers::BeTrue" "Object" "Kernel" "BasicObject"])
-                    (respond-to? [_ method-name] false)
-                    (get-ruby-method [this method-name] nil))
-                    
-        "be_false" (reify 
-                     ruby-classes/RubyObject
-                     (ruby-class [_] "Spec::Matchers::BeFalse")
-                     (ruby-ancestors [_] ["Spec::Matchers::BeFalse" "Object" "Kernel" "BasicObject"])
-                     (respond-to? [_ method-name] false)
-                     (get-ruby-method [this method-name] nil))
+        "be_nil" (create-rspec-matcher "BeNil")
+        "be_true" (create-rspec-matcher "BeTrue")
+        "be_false" (create-rspec-matcher "BeFalse")
+
+        "be_an_instance_of" (if (= 1 (count args))
+                              (let [expected-class (first args)]
+                                ;; Return a matcher function
+                                (fn [obj]
+                                  (let [actual-class (ruby-class-name obj)]
+                                    (= actual-class expected-class))))
+                              (throw (ex-info "be_an_instance_of requires exactly one argument"
+                                             {:method method-name :args args})))
 
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
@@ -1058,29 +1068,11 @@
         (interpret-user-method ast entity-id variables method-def []))
 
       ;; Check for RSpec matchers
-      (= var-name "be_nil")
-      (reify 
-        ruby-classes/RubyObject
-        (ruby-class [_] "Spec::Matchers::BeNil")
-        (ruby-ancestors [_] ["Spec::Matchers::BeNil" "Object" "Kernel" "BasicObject"])
-        (respond-to? [_ method-name] false)
-        (get-ruby-method [this method-name] nil))
-        
-      (= var-name "be_true")
-      (reify 
-        ruby-classes/RubyObject
-        (ruby-class [_] "Spec::Matchers::BeTrue")
-        (ruby-ancestors [_] ["Spec::Matchers::BeTrue" "Object" "Kernel" "BasicObject"])
-        (respond-to? [_ method-name] false)
-        (get-ruby-method [this method-name] nil))
-        
-      (= var-name "be_false")
-      (reify 
-        ruby-classes/RubyObject
-        (ruby-class [_] "Spec::Matchers::BeFalse")
-        (ruby-ancestors [_] ["Spec::Matchers::BeFalse" "Object" "Kernel" "BasicObject"])
-        (respond-to? [_ method-name] false)
-        (get-ruby-method [this method-name] nil))
+      (contains? #{"be_nil" "be_true" "be_false"} var-name)
+      (case var-name
+        "be_nil" (create-rspec-matcher "BeNil")
+        "be_true" (create-rspec-matcher "BeTrue")
+        "be_false" (create-rspec-matcher "BeFalse"))
 
       ;; Neither variable nor method found
       :else
@@ -1117,7 +1109,7 @@
                 module-obj
                 ;; More parts to resolve, continue with module scope
                 (recur (rest remaining-parts) current-scope new-path)))
-            
+
             ;; Found a regular constant with this name
             (contains? current-scope potential-key)
             (let [const-obj (get current-scope potential-key)]
@@ -1129,24 +1121,48 @@
                   (recur (rest remaining-parts) current-scope new-path)
                   (throw (ex-info (str current-part " is not a module or class")
                                  {:part current-part :object const-obj})))))
-            
+
             ;; Part not found
             :else
             (throw (ex-info (str "Uninitialized constant " potential-key)
                            {:part current-part :qualified-name qualified-name}))))))))
 
+(defn interpret-assignment-with-context
+  "Interpret an assignment statement with optional module context for qualified constants."
+  [ast entity-id variables module-context]
+  (let [{:keys [variable value]} (parser/get-components ast entity-id [:variable :value])]
+    (if value
+      (let [interpreted-value (interpret-expression ast value variables)
+            ;; If we're in a module context and this is a constant (starts with uppercase)
+            ;; store it with the qualified name
+            qualified-variable (if (and module-context
+                                       (re-matches #"^[A-Z].*" variable))
+                                (str module-context "::" variable)
+                                variable)]
+        (swap! variables assoc qualified-variable interpreted-value)
+        interpreted-value)
+      ;; Handle case where value is stored directly
+      (let [direct-value (parser/get-value ast entity-id)
+            qualified-variable (if (and module-context
+                                       (re-matches #"^[A-Z].*" variable))
+                                (str module-context "::" variable)
+                                variable)]
+        (swap! variables assoc qualified-variable direct-value)
+        direct-value))))
+
 (defn interpret-assignment
   "Interpret an assignment statement."
   [ast entity-id variables]
-  (let [{:keys [variable value]} (parser/get-components ast entity-id [:variable :value])]
-    (if value
-      (let [interpreted-value (interpret-expression ast value variables)]
-        (swap! variables assoc variable interpreted-value)
-        interpreted-value)
-      ;; Handle case where value is stored directly
-      (let [direct-value (parser/get-value ast entity-id)]
-        (swap! variables assoc variable direct-value)
-        direct-value))))
+  (interpret-assignment-with-context ast entity-id variables nil))
+
+(defn interpret-expression-with-module-context
+  "Interpret an expression with module context for qualified constant storage."
+  [ast entity-id variables module-context]
+  (let [node-type (parser/get-node-type ast entity-id)]
+    (case node-type
+      :assignment-statement (interpret-assignment-with-context ast entity-id variables module-context)
+      ;; For all other expressions, use normal interpretation
+      (interpret-expression ast entity-id variables))))
 
 (defn interpret-multiple-assignment
   "Interpret a multiple assignment statement (x, y = value)."
@@ -1218,15 +1234,15 @@
         (cond
           (ruby-array? array-obj)
           (swap! (:data array-obj) assoc index-val value)
-          
+
           (vector? array-obj)
           ;; For regular vectors, we can't mutate them directly
           ;; This is a limitation - Ruby arrays are mutable but Clojure vectors aren't
           (throw (ex-info "Cannot assign to immutable vector" {:array array-obj :index index-val :value value}))
-          
+
           :else
           (throw (ex-info "Cannot assign to non-array object" {:object array-obj :index index-val :value value}))))
-      
+
       ;; Add other assignable expression types here as needed
       :else
       (throw (ex-info (str "Assignment to " expr-type " not supported in for loops")
@@ -1243,7 +1259,7 @@
                  (vector? value) value
                  (ruby-array? value) @(:data value)
                  :else [value])]
-    
+
     ;; Count variables after splat to reserve end positions
     (let [vars-after-splat (count (take-while #(not= (:type %) :splat) (reverse var-specs)))]
       (loop [remaining-vars var-specs
@@ -1259,7 +1275,7 @@
                 (when var-name
                   (swap! variables-atom assoc var-name var-value))
                 (recur (rest remaining-vars) (inc index)))
-              
+
               :instance-variable
               (let [var-name (:name var-spec)
                     var-value (if (< index (count values))
@@ -1277,7 +1293,7 @@
                     (let [default-instance {:instance-variables (atom {var-name var-value})}]
                       (swap! variables-atom assoc "self" default-instance))))
                 (recur (rest remaining-vars) (inc index)))
-              
+
               :splat
               (let [var-name (:name var-spec)
                     ;; Calculate splat range: from current index to (total - vars after splat)
@@ -1287,7 +1303,7 @@
                   (swap! variables-atom assoc var-name (->RubyArray (atom splat-values))))
                 ;; Continue with variables after splat, adjusting index
                 (recur (rest remaining-vars) end-index))
-              
+
               ;; Unknown type, skip
               (recur (rest remaining-vars) (inc index)))))))))
 
@@ -1461,7 +1477,7 @@
   (let [simple-name (last (clojure.string/split qualified-name #"::"))
         module-key (str "module:" qualified-name)]
     ;; Store module with both keys in a single atomic operation
-    (swap! variables assoc 
+    (swap! variables assoc
            module-key module-info
            simple-name module-info)))
 
@@ -1471,6 +1487,26 @@
   (let [qualified-parts (parser/get-component ast entity-id :qualified-name)
         qualified-name (resolve-qualified-name qualified-parts variables)
         body-id (parser/get-component ast entity-id :body)]
+
+    ;; Auto-create parent modules if they don't exist (for qualified names like Parent::Child)
+    (when (> (count qualified-parts) 1)
+      (let [parts (mapv :value qualified-parts)
+            parent-parts (butlast parts)]
+        (loop [current-parts []
+               remaining-parts parent-parts]
+          (when (seq remaining-parts)
+            (let [current-path (conj current-parts (first remaining-parts))
+                  current-qualified-name (clojure.string/join "::" current-path)
+                  module-key (str "module:" current-qualified-name)]
+              ;; Only create if it doesn't exist
+              (when-not (contains? @variables module-key)
+                (let [parent-module-info {:name current-qualified-name
+                                         :type :module
+                                         :methods (atom {})
+                                         :ast ast
+                                         :body-id nil}]
+                  (store-module-in-namespace variables current-qualified-name parent-module-info)))
+              (recur current-path (rest remaining-parts)))))))
 
     ;; Create module object with methods
     (let [module-methods (atom {})
@@ -1512,7 +1548,7 @@
 
                 ;; Other statements - execute them in module context
                 :else
-                (interpret-expression ast method-id variables))))))
+                (interpret-expression-with-module-context ast method-id variables qualified-name))))))
 
       ;; Store module in namespace
       (store-module-in-namespace variables qualified-name module-info)
@@ -1799,7 +1835,13 @@
   ([ast root-entity-id opts]
    (let [builtin-vars (create-builtin-classes)
          custom-vars (get opts :namespaces {})
-         initial-vars (merge builtin-vars custom-vars)
+         ;; Add spec helper functions
+         spec-helpers {"be_an_instance_of" (fn [expected-class]
+                                            (fn [obj]
+                                              (let [actual-class (ruby-class-name obj)
+                                                    expected-class-name (extract-class-name expected-class)]
+                                                (= actual-class expected-class-name))))}
+         initial-vars (merge builtin-vars custom-vars spec-helpers)
          variables (atom initial-vars)
          root-type (parser/get-node-type ast root-entity-id)]
      (if (= :program root-type)
