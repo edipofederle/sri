@@ -618,11 +618,17 @@
       (= ch \:)
       (let [[_ state1] (next-char state)
             next-ch (peek-char state1)]
-        (if (identifier-start? next-ch)
+        (cond
+          ;; :: operator for module scope resolution
+          (= next-ch \:)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "::" start-line start-column) state2])
           ;; Symbol :identifier
+          (identifier-start? next-ch)
           (let [[identifier-token state2] (read-identifier state1)]
             [(create-token :symbol (:value identifier-token) start-line start-column) state2])
           ;; Just a colon operator (for hash syntax)
+          :else
           [(create-token :operator ":" start-line start-column) state1]))
 
       (= ch \.)

@@ -81,6 +81,23 @@
           (:value ex-data)  ; Return the explicit return value
           (throw e))))))
 
+(defn ruby-class-name
+  "Get the Ruby class name for an object."
+  [obj]
+  (cond
+    ;; Module objects return "Module" as their class
+    (and (map? obj) (= (:type obj) :module)) "Module"
+    ;; Other built-in type classes
+    (string? obj) "String"
+    (integer? obj) "Integer"
+    (float? obj) "Float"
+    (keyword? obj) "Symbol"
+    (ruby-array? obj) "Array"
+    (ruby-hash? obj) "Hash"
+    (vector? obj) "Array" ; Legacy support
+    (map? obj) "Hash"     ; Legacy support
+    :else ::method-not-found))
+
 (defn interpret-literal
   "Interpret a literal value node."
   [ast entity-id]
@@ -814,6 +831,7 @@
     "id2name" (if (keyword? receiver)
                 (name receiver)         ; Same as to_s for symbols
                 ::method-not-found)
+    "class" (ruby-class-name receiver)
     ;; Range methods (each is handled by enumerable module)
     "to_a" (if (ruby-classes/ruby-range? receiver)
              (ruby-classes/invoke-ruby-method receiver :to_a)
@@ -1068,6 +1086,54 @@
       :else
       (throw (ex-info (str "Undefined variable: " var-name)
                       {:variable var-name})))))
+
+(defn interpret-qualified-identifier
+  "Interpret a qualified identifier like Module::Class."
+  [ast entity-id variables]
+  (let [qualified-name (parser/get-component ast entity-id :qualified-name)
+        parts (parser/get-component ast entity-id :parts)]
+    ;; Try to resolve the qualified name by looking up each part
+    (loop [remaining-parts parts
+           current-scope @variables
+           resolved-path []]
+      (if (empty? remaining-parts)
+        ;; We've resolved all parts, return the final value
+        (let [final-key (clojure.string/join "::" resolved-path)]
+          (or (get current-scope final-key)
+              (get current-scope (str "module:" final-key))
+              (throw (ex-info (str "Uninitialized constant " qualified-name)
+                             {:qualified-name qualified-name}))))
+        ;; Try to resolve the next part
+        (let [current-part (first remaining-parts)
+              new-path (conj resolved-path current-part)
+              potential-key (clojure.string/join "::" new-path)
+              potential-module-key (str "module:" potential-key)]
+          (cond
+            ;; Found a module with this name
+            (contains? current-scope potential-module-key)
+            (let [module-obj (get current-scope potential-module-key)]
+              (if (= 1 (count remaining-parts))
+                ;; This is the final part, return the module
+                module-obj
+                ;; More parts to resolve, continue with module scope
+                (recur (rest remaining-parts) current-scope new-path)))
+            
+            ;; Found a regular constant with this name
+            (contains? current-scope potential-key)
+            (let [const-obj (get current-scope potential-key)]
+              (if (= 1 (count remaining-parts))
+                ;; This is the final part, return the constant
+                const-obj
+                ;; More parts to resolve - this should be a module/class
+                (if (and (map? const-obj) (or (= (:type const-obj) :module) (:name const-obj)))
+                  (recur (rest remaining-parts) current-scope new-path)
+                  (throw (ex-info (str current-part " is not a module or class")
+                                 {:part current-part :object const-obj})))))
+            
+            ;; Part not found
+            :else
+            (throw (ex-info (str "Uninitialized constant " potential-key)
+                           {:part current-part :qualified-name qualified-name}))))))))
 
 (defn interpret-assignment
   "Interpret an assignment statement."
@@ -1381,6 +1447,79 @@
 
 
 
+(defn resolve-qualified-name
+  "Resolve a qualified name like [\"Foo\", \"Bar\"] to a full path string."
+  [qualified-parts _variables]
+  (->> qualified-parts
+       (map :value)
+       (clojure.string/join "::")))
+
+(defn store-module-in-namespace
+  "Store a module in the appropriate namespace location."
+  [variables qualified-name module-info]
+  ;; Store with both qualified and unqualified names for access
+  (let [simple-name (last (clojure.string/split qualified-name #"::"))
+        module-key (str "module:" qualified-name)]
+    ;; Store module with both keys in a single atomic operation
+    (swap! variables assoc 
+           module-key module-info
+           simple-name module-info)))
+
+(defn interpret-module-definition
+  "Interpret a module definition - stores module info in variables for later use."
+  [ast entity-id variables]
+  (let [qualified-parts (parser/get-component ast entity-id :qualified-name)
+        qualified-name (resolve-qualified-name qualified-parts variables)
+        body-id (parser/get-component ast entity-id :body)]
+
+    ;; Create module object with methods
+    (let [module-methods (atom {})
+          module-info {:name qualified-name
+                       :type :module
+                       :methods module-methods
+                       :ast ast
+                       :body-id body-id}]
+
+      ;; Process module body to extract method definitions
+      (when body-id
+        (let [method-statements (parser/get-children ast body-id)]
+          (doseq [method-id method-statements]
+            (let [method-type (parser/get-node-type ast method-id)]
+              (cond
+                ;; Module methods (def method_name)
+                (= method-type :method-definition)
+                (let [method-name (parser/get-component ast method-id :name)
+                      method-params (parser/get-component ast method-id :parameters)
+                      method-body (parser/get-component ast method-id :body)]
+                  (swap! module-methods assoc method-name
+                         {:name method-name
+                          :parameters method-params
+                          :body method-body
+                          :module qualified-name
+                          :ast ast}))
+
+                ;; Nested module definitions
+                (= method-type :module-definition)
+                (let [nested-qualified-parts (parser/get-component ast method-id :qualified-name)
+                      nested-simple-name (:value (first nested-qualified-parts))
+                      nested-qualified-name (str qualified-name "::" nested-simple-name)]
+                  ;; Use full module interpretation for proper recursion
+                  (let [original-qualified-name (parser/get-component ast method-id :qualified-name)
+                        updated-qualified-name [{:type :identifier :value nested-qualified-name}]
+                        ;; Temporarily update the AST with the correct qualified name
+                        temp-ast (assoc-in ast [:components :qualified-name method-id] updated-qualified-name)]
+                    (interpret-module-definition temp-ast method-id variables)))
+
+                ;; Other statements - execute them in module context
+                :else
+                (interpret-expression ast method-id variables))))))
+
+      ;; Store module in namespace
+      (store-module-in-namespace variables qualified-name module-info)
+
+      ;; Return module object (Ruby modules are objects)
+      module-info)))
+
 (defn interpret-class-definition
   "Interpret a class definition - stores class info in variables for later instantiation."
   ([ast entity-id variables]
@@ -1541,6 +1680,7 @@
        :splat-operation (interpret-splat-operation ast entity-id variables)
        :method-call (interpret-method-call ast entity-id variables)
        :identifier (interpret-identifier ast entity-id variables)
+       :qualified-identifier (interpret-qualified-identifier ast entity-id variables)
        :assignment-statement (interpret-assignment ast entity-id variables)
        :multiple-assignment-statement (interpret-multiple-assignment ast entity-id variables)
        :array-access (interpret-array-access ast entity-id variables)
@@ -1549,6 +1689,7 @@
        :instance-variable-access (interpret-instance-variable-access ast entity-id variables)
        :instance-variable-assignment (interpret-instance-variable-assignment ast entity-id variables)
        :method-definition (interpret-method-definition ast entity-id variables)
+       :module-definition (interpret-module-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables)
        :if-statement (interpret-if-statement ast entity-id variables)
        :postfix-if (interpret-postfix-if ast entity-id variables)
@@ -1597,6 +1738,7 @@
        :splat-operation (interpret-splat-operation ast entity-id variables)
        :method-call (interpret-method-call ast entity-id variables)
        :identifier (interpret-identifier ast entity-id variables)
+       :qualified-identifier (interpret-qualified-identifier ast entity-id variables)
        :assignment-statement (interpret-assignment ast entity-id variables)
        :multiple-assignment-statement (interpret-multiple-assignment ast entity-id variables)
        :array-access (interpret-array-access ast entity-id variables)
@@ -1605,6 +1747,7 @@
        :instance-variable-access (interpret-instance-variable-access ast entity-id variables)
        :instance-variable-assignment (interpret-instance-variable-assignment ast entity-id variables)
        :method-definition (interpret-method-definition ast entity-id variables)
+       :module-definition (interpret-module-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables opts)
        :if-statement (interpret-if-statement ast entity-id variables)
        :postfix-if (interpret-postfix-if ast entity-id variables)
@@ -1643,6 +1786,10 @@
    "String" {:name "String"
              :builtin true
              :ruby-class true  ; Mark as new Ruby class
+             :class-methods {"new" {:ruby-class-method true :name "new"}}}
+   "Module" {:name "Module"
+             :builtin true
+             :ruby-class true
              :class-methods {"new" {:ruby-class-method true :name "new"}}}})
 
 (defn interpret-program

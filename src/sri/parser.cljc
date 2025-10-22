@@ -68,7 +68,7 @@
 (def-component-accessors :node-type :value :operator :left :right
                         :variable :name :parameters :body :receiver
                         :arguments :condition :then :else :statements :class :type
-                        :block :block-params :block-body)
+                        :block :block-params :block-body :qualified-name :parts)
 
 ;; Special case for :method to avoid conflict with clojure.core/get-method
 (defn get-method-name
@@ -742,6 +742,35 @@
                   [_ state] (expect-token state :operator ")")]
               [state expr-id]))))))
 
+(defn parse-qualified-identifier
+  "Parse a qualified identifier like Module::Class."
+  [state first-identifier]
+  (loop [current-state state
+         parts [first-identifier]]
+    (if (match-token? current-state :operator "::")
+      (let [[_ state-after-scope] (consume-token current-state)]
+        (if (match-token? state-after-scope :identifier)
+          (let [[next-id-token state-after-next] (consume-token state-after-scope)]
+            (recur state-after-next (conj parts (:value next-id-token))))
+          (throw (ex-info "Expected identifier after '::'"
+                         {:token (current-token state-after-scope)}))))
+      ;; No more :: found
+      (let [position (or (get-in (current-token current-state) [:line :column])
+                         {:line 1 :column 1})]
+        (if (= 1 (count parts))
+          ;; Single identifier, return as regular identifier
+          (let [[new-ast entity-id] (create-node (:ast current-state) :identifier
+                                               :value first-identifier
+                                               :position position)]
+            [(assoc current-state :ast new-ast) entity-id])
+          ;; Qualified identifier, create qualified-identifier node
+          (let [qualified-name (clojure.string/join "::" parts)
+                [new-ast entity-id] (create-node (:ast current-state) :qualified-identifier
+                                               :qualified-name qualified-name
+                                               :parts parts
+                                               :position position)]
+            [(assoc current-state :ast new-ast) entity-id]))))))
+
 (defn parse-primary
   "Parse a primary expression (literals, identifiers, parenthesized expressions, method calls)."
   [state]
@@ -762,18 +791,26 @@
                        [(assoc state-after-operand :ast new-ast) splat-id]))
                    (when (match-token? state :identifier)
                      (let [[id-token state-after-id] (consume-token state)
-                           [new-ast entity-id] (create-node (:ast state-after-id) :identifier
-                                                          :value (:value id-token)
-                                                          :position {:line (:line id-token) :column (:column id-token)})
-                           state-with-ast (assoc state-after-id :ast new-ast)]
+                           identifier-value (:value id-token)]
                        (cond
-                         ;; Explicit parentheses - definitely a method call
-                         (match-token? state-with-ast :operator "(")
-                         (parse-method-call state-with-ast nil (:value id-token) id-token)
+                         ;; Check for qualified identifier (Module::Class)
+                         (match-token? state-after-id :operator "::")
+                         (parse-qualified-identifier state-after-id identifier-value)
 
-                         ;; Otherwise, treat as identifier
+                         ;; Explicit parentheses - definitely a method call
+                         (match-token? state-after-id :operator "(")
+                         (let [[new-ast entity-id] (create-node (:ast state-after-id) :identifier
+                                                              :value identifier-value
+                                                              :position {:line (:line id-token) :column (:column id-token)})
+                               state-with-ast (assoc state-after-id :ast new-ast)]
+                           (parse-method-call state-with-ast nil identifier-value id-token))
+
+                         ;; Otherwise, treat as regular identifier
                          :else
-                         [state-with-ast entity-id])))
+                         (let [[new-ast entity-id] (create-node (:ast state-after-id) :identifier
+                                                              :value identifier-value
+                                                              :position {:line (:line id-token) :column (:column id-token)})]
+                           [(assoc state-after-id :ast new-ast) entity-id]))))
                    (parse-atomic state))]
     (if result
       (let [[state primary-id] result]
@@ -1233,6 +1270,48 @@
                 state-after-newlines (skip-separators state-after-stmt)]
             (recur state-after-newlines (conj statements stmt-id))))))))
 
+(defn parse-qualified-name
+  "Parse a qualified name like ClassName or Parent::Child or variable::Name."
+  [state]
+  (loop [current-state state
+         parts []]
+    (cond
+      ;; Check for identifier
+      (match-token? current-state :identifier)
+      (let [[name-token next-state] (consume-token current-state)
+            new-parts (conj parts {:type :identifier :value (:value name-token)})]
+        ;; Check for :: continuation
+        (if (match-token? next-state :operator "::")
+          (let [[_ state-after-scope] (consume-token next-state)]
+            (recur state-after-scope new-parts))
+          ;; No more :: found, we're done
+          [next-state new-parts]))
+
+      ;; Variables would just be regular identifiers that resolve to module objects at runtime
+      ;; Ruby allows both variable::Name and Constant::Name syntax
+
+      :else
+      ;; No valid name part found
+      [current-state parts])))
+
+(defn parse-module-definition
+  "Parse a module definition (module ModuleName ... end)."
+  [state]
+  (when (match-token? state :keyword "module")
+    (let [[_ state-after-module] (consume-token state)
+          [state-after-name qualified-parts] (parse-qualified-name state-after-module)]
+      (if (empty? qualified-parts)
+        (throw (ex-info "Expected module name after 'module'"
+                       {:token (current-token state-after-name)}))
+        (let [state-skip-newlines (skip-separators state-after-name)
+              [state-after-body body-id] (parse-class-block state-skip-newlines)
+              [_ final-state] (expect-token state-after-body :keyword "end")
+              [new-ast entity-id] (create-node (:ast final-state) :module-definition
+                                             :qualified-name qualified-parts
+                                             :body body-id
+                                             :position {:line (:line (first (:tokens state))) :column (:column (first (:tokens state)))})]
+          [(assoc final-state :ast new-ast) entity-id])))))
+
 (defn parse-class-definition
   "Parse a class definition (class ClassName < ParentClass ... end)."
   [state]
@@ -1283,9 +1362,9 @@
           ;; Check if there's an expression after break
           state-after-skip (skip-separators state-after-break)
           next-token (current-token state-after-skip)]
-      (if (and next-token 
+      (if (and next-token
                (not (#{:newline :operator} (:type next-token)))
-               (not (and (= (:type next-token) :keyword) 
+               (not (and (= (:type next-token) :keyword)
                         (#{"end" "else" "elsif" "when" "rescue" "ensure" "if"} (:value next-token)))))
         ;; Parse the break value expression
         (let [[state-after-expr expr-id] (parse-expression state-after-skip)
@@ -1540,7 +1619,8 @@
 (defn parse-statement
   "Parse a statement (expression or control flow)."
   [state]
-  (when-let [result (or (parse-class-definition state)
+  (when-let [result (or (parse-module-definition state)
+                        (parse-class-definition state)
                         (parse-method-definition state)
                         (parse-if-statement state)
                         (parse-while-statement state)
