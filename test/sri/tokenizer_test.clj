@@ -263,9 +263,13 @@
     (is (thrown-with-msg? Exception #"Unterminated string literal"
           (tokenize "valid_token \"unterminated")))
 
-    ;; Test unexpected character after !
-    (is (thrown-with-msg? Exception #"Unexpected character.*!"
-          (tokenize "!x")))
+    ;; Test that ! is now a valid operator (changed for not operator support)
+    (let [tokens (tokenize "!x")]
+      (is (= 2 (count tokens)))
+      (is (= :operator (:type (first tokens))))
+      (is (= "!" (:value (first tokens))))
+      (is (= :identifier (:type (second tokens))))
+      (is (= "x" (:value (second tokens)))))
 
     ;; Test instance variable requires identifier
     (is (thrown-with-msg? Exception #"Expected identifier after @"
@@ -283,5 +287,13 @@
 
     ;; Test multiple error conditions don't interfere
     (is (thrown? Exception (tokenize "good \"bad")))
-    (is (thrown? Exception (tokenize "\"good\" !bad")))
+    ;; Note: !bad is now valid (! operator followed by bad identifier)
+    (let [tokens (tokenize "\"good\" !bad")]
+      (is (= 3 (count tokens)))
+      (is (= :string (:type (nth tokens 0))))
+      (is (= "good" (:value (nth tokens 0))))
+      (is (= :operator (:type (nth tokens 1))))
+      (is (= "!" (:value (nth tokens 1))))
+      (is (= :identifier (:type (nth tokens 2))))
+      (is (= "bad" (:value (nth tokens 2)))))
     (is (thrown? Exception (tokenize "\"good\" @")))))

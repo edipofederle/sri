@@ -711,6 +711,18 @@
                                             :operand operand-id
                                             :position {:line (:line not-token) :column (:column not-token)})]
           [(assoc state-after-operand :ast new-ast) unary-id]))
+      ;; Handle beginless ranges (..1 and ...1)
+      (when (or (match-token? state :operator "..")
+                (match-token? state :operator "..."))
+        (let [[range-token state-after-range] (consume-token state)
+              operator (:value range-token)
+              inclusive? (= operator "..")
+              [state-after-operand operand-id] (parse-atomic state-after-range)
+              [new-ast range-id] (create-node (:ast state-after-operand) :beginless-range
+                                            :end operand-id
+                                            :inclusive? inclusive?
+                                            :position {:line (:line range-token) :column (:column range-token)})]
+          [(assoc state-after-operand :ast new-ast) range-id]))
       (parse-integer-literal state)
       (parse-float-literal state)
       (parse-rational-literal state)
@@ -889,7 +901,18 @@
         (let [operator (:value token)
               op-precedence (get-precedence operator)
               [_ state-after-op] (consume-token current-state)
-              [state-after-right right-id] (parse-primary state-after-op)
+              ;; Handle endless ranges by checking for end conditions
+              [state-after-right right-id] (if (and (contains? #{".." "..."} operator)
+                                                   (let [next-token (current-token state-after-op)]
+                                                     (or (nil? next-token)
+                                                         (= (:type next-token) :eof)
+                                                         (= (:type next-token) :newline)
+                                                         (and (= (:type next-token) :operator)
+                                                              (contains? #{")" "]" "}" ","} (:value next-token))))))
+                                              ;; No right operand - endless range
+                                              [state-after-op nil]
+                                              ;; Normal case - parse right operand
+                                              (parse-primary state-after-op))
 
               ;; Handle right-associative operators (assignment)
               next-min-precedence (if (= operator "=")
@@ -905,12 +928,19 @@
                   [state-after-right right-id])
                 [state-after-right right-id])
 
-              ;; Create the binary operation node
-              [new-ast new-left-id] (create-node (:ast final-state) :binary-operation
-                                               :operator operator
-                                               :left left-id
-                                               :right final-right-id
-                                               :position {:line (:line token) :column (:column token)})
+              ;; Create the appropriate node type
+              [new-ast new-left-id] (if (and (contains? #{".." "..."} operator) (nil? final-right-id))
+                                      ;; Endless range
+                                      (create-node (:ast final-state) :endless-range
+                                                 :start left-id
+                                                 :inclusive? (= operator "..")
+                                                 :position {:line (:line token) :column (:column token)})
+                                      ;; Regular binary operation
+                                      (create-node (:ast final-state) :binary-operation
+                                                 :operator operator
+                                                 :left left-id
+                                                 :right final-right-id
+                                                 :position {:line (:line token) :column (:column token)}))
               new-state (assoc final-state :ast new-ast)]
           (recur new-state new-left-id))
         [current-state left-id]))))

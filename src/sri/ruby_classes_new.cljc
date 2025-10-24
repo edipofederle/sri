@@ -9,7 +9,8 @@
             [sri.ruby-object :as ruby-obj]
             [sri.ruby-string :as ruby-str]
             [sri.ruby-range :as ruby-range]
-            [sri.ruby-array :as ruby-array]))
+            [sri.ruby-array :as ruby-array]
+            [sri.ruby-numeric :as ruby-numeric]))
 
 ;; =============================================================================
 ;; Re-export Constructor Functions
@@ -44,6 +45,13 @@
 (def array-set! ruby-array/array-set!)
 (def array-push! ruby-array/array-push!)
 (def array-pop! ruby-array/array-pop!)
+
+;; Numeric
+(def ruby-numeric? ruby-numeric/ruby-numeric?)
+(def ruby-integer? ruby-numeric/ruby-integer?)
+(def ruby-float? ruby-numeric/ruby-float?)
+(def numeric-ruby-class ruby-numeric/numeric-ruby-class)
+(def numeric-ruby-ancestors ruby-numeric/numeric-ruby-ancestors)
 
 ;; =============================================================================
 ;; Re-export Record Constructors
