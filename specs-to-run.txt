@@ -3,3 +3,4 @@
 /Users/edipo/spec/language/numbers_spec.rb
 /Users/edipo/spec/language/loop_spec.rb
 /Users/edipo/spec/language/module_spec.rb
+/Users/edipo/spec/language/not_spec.rb

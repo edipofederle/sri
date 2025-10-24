@@ -694,7 +694,24 @@
 (defn parse-atomic
   "Parse an atomic expression (literals, identifiers, parenthesized expressions) without postfix operations."
   [state]
-  (or (parse-integer-literal state)
+  (or ;; Handle unary operations recursively
+      (when (match-token? state :operator "!")
+        (let [[not-token state-after-not] (consume-token state)
+              [state-after-operand operand-id] (parse-atomic state-after-not)
+              [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
+                                            :operator "!"
+                                            :operand operand-id
+                                            :position {:line (:line not-token) :column (:column not-token)})]
+          [(assoc state-after-operand :ast new-ast) unary-id]))
+      (when (match-token? state :keyword "not")
+        (let [[not-token state-after-not] (consume-token state)
+              [state-after-operand operand-id] (parse-atomic state-after-not)
+              [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
+                                            :operator "not"
+                                            :operand operand-id
+                                            :position {:line (:line not-token) :column (:column not-token)})]
+          [(assoc state-after-operand :ast new-ast) unary-id]))
+      (parse-integer-literal state)
       (parse-float-literal state)
       (parse-rational-literal state)
       (parse-complex-literal state)
@@ -781,6 +798,22 @@
                                                          :operator "-"
                                                          :operand operand-id
                                                          :position {:line (:line minus-token) :column (:column minus-token)})]
+                       [(assoc state-after-operand :ast new-ast) unary-id]))
+                   (when (match-token? state :operator "!")
+                     (let [[not-token state-after-not] (consume-token state)
+                           [state-after-operand operand-id] (parse-atomic state-after-not)
+                           [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
+                                                         :operator "!"
+                                                         :operand operand-id
+                                                         :position {:line (:line not-token) :column (:column not-token)})]
+                       [(assoc state-after-operand :ast new-ast) unary-id]))
+                   (when (match-token? state :keyword "not")
+                     (let [[not-token state-after-not] (consume-token state)
+                           [state-after-operand operand-id] (parse-atomic state-after-not)
+                           [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
+                                                         :operator "not"
+                                                         :operand operand-id
+                                                         :position {:line (:line not-token) :column (:column not-token)})]
                        [(assoc state-after-operand :ast new-ast) unary-id]))
                    (when (match-token? state :operator "*")
                      (let [[splat-token state-after-splat] (consume-token state)

@@ -482,6 +482,14 @@
           (throw (ex-info (str "Unknown binary operator: " operator)
                           {:operator operator})))))))
 
+(defn ruby-not
+  "Implement Ruby-style negation where only false and nil are falsy."
+  [value]
+  (cond
+    (= value false) true
+    (= value nil) true
+    :else false))
+
 (defn interpret-unary-operation
   "Interpret a unary operation like -5 or !true."
   [ast entity-id variables]
@@ -493,7 +501,8 @@
             (satisfies? ruby-classes/RubyObject operand-val)
             (ruby-classes/invoke-ruby-method operand-val "-@")
             :else (- operand-val))
-      "!" (not operand-val)
+      "!" (ruby-not operand-val)
+      "not" (ruby-not operand-val)
       "+" (cond
             (satisfies? ruby-classes/RubyObject operand-val)
             (ruby-classes/invoke-ruby-method operand-val "+@")

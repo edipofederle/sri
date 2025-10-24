@@ -13,6 +13,7 @@
    "%" :modulo
    "==" :equal
    "!=" :not-equal
+   "!" :not
    "<" :less-than
    "<=" :less-equal
    ">" :greater-than
@@ -546,8 +547,7 @@
         (if (= next-ch \=)
           (let [[_ state2] (next-char state1)]
             [(create-token :operator "!=" start-line start-column) state2])
-          (throw (ex-info "Unexpected character '!'"
-                         {:line start-line :column start-column}))))
+          [(create-token :operator "!" start-line start-column) state1]))
 
       (= ch \<)
       (let [[_ state1] (next-char state)
