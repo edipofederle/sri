@@ -5,3 +5,4 @@
 /Users/edipo/spec/language/module_spec.rb
 /Users/edipo/spec/language/not_spec.rb
 /Users/edipo/spec/language/and_spec.rb
+/Users/edipo/spec/language/range_spec.rb
