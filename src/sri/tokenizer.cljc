@@ -597,6 +597,16 @@
             [(create-token :operator "/=" start-line start-column) state2])
           [(create-token :operator "/" start-line start-column) state1]))
 
+      (= ch \$)
+      ;; Global variable $var
+      (let [[_ state1] (next-char state)
+            next-ch (peek-char state1)]
+        (if (identifier-start? next-ch)
+          (let [[identifier-token state2] (read-identifier state1)]
+            [(create-token :global-variable (str "$" (:value identifier-token)) start-line start-column) state2])
+          (throw (ex-info "Expected identifier after $"
+                         {:line start-line :column start-column}))))
+
       (= ch \@)
       (let [[_ state1] (next-char state)
             next-ch (peek-char state1)]

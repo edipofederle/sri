@@ -61,7 +61,7 @@
                  (sri/eval-string "invalid syntax here $$$ @#@")))
     (is (thrown? clojure.lang.ExceptionInfo
                  (sri/eval-string "undefined_variable"))))
-  
+
   (testing "Error contains source information"
     (try
       (sri/eval-string "invalid syntax")
@@ -81,10 +81,10 @@
           n * factorial(n - 1)
         end
       end
-      
+
       factorial(5)
     ")))
-    
+
     (is (= "Alice is 30 years old" (sri/eval-string "
       name = 'Alice'
       age = 30
@@ -94,6 +94,6 @@
 (deftest test-eval-string-with-options
   (testing "eval-string with empty options map"
     (is (= 3 (sri/eval-string "1 + 2" {}))))
-  
+
   (testing "eval-string single-arity form"
     (is (= 3 (sri/eval-string "1 + 2")))))

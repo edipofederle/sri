@@ -744,6 +744,12 @@
                                              :variable (:value var-token)
                                              :position {:line (:line var-token) :column (:column var-token)})]
           [(assoc state-after-var :ast new-ast) entity-id]))
+      (when (match-token? state :global-variable)
+        (let [[var-token state-after-var] (consume-token state)
+              [new-ast entity-id] (create-node (:ast state-after-var) :global-variable-access
+                                             :variable (:value var-token)
+                                             :position {:line (:line var-token) :column (:column var-token)})]
+          [(assoc state-after-var :ast new-ast) entity-id]))
       (when (match-token? state :class-variable)
         (let [[var-token state-after-var] (consume-token state)
               [new-ast entity-id] (create-node (:ast state-after-var) :class-variable-access
@@ -1592,6 +1598,20 @@
                                            :position {:line (:line var-token) :column (:column var-token)})]
         [(assoc state-after-value :ast new-ast) entity-id]))))
 
+(defn parse-global-variable-assignment
+  "Parse a global variable assignment ($var = expression)."
+  [state]
+  (when (match-token? state :global-variable)
+    (when (match-token? (update state :pos inc) :operator "=")
+      (let [[var-token state-after-var] (consume-token state)
+            [_ state-after-assign] (consume-token state-after-var)
+            [state-after-value value-id] (parse-expression state-after-assign)
+            [new-ast entity-id] (create-node (:ast state-after-value) :global-variable-assignment
+                                           :variable (:value var-token)
+                                           :value value-id
+                                           :position {:line (:line var-token) :column (:column var-token)})]
+        [(assoc state-after-value :ast new-ast) entity-id]))))
+
 (defn parse-class-variable-assignment
   "Parse a class variable assignment (@@var = expression)."
   [state]
@@ -1696,6 +1716,7 @@
                         (parse-next-statement state)
                         (parse-loop-statement state)
                         (parse-instance-variable-assignment state)
+                        (parse-global-variable-assignment state)
                         (parse-class-variable-assignment state)
                         (parse-indexed-assignment-statement state)
                         (parse-method-assignment-statement state)

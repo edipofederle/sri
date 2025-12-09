@@ -1,8 +1,10 @@
 /Users/edipo/spec/language/for_spec.rb
 /Users/edipo/spec/language/and_spec.rb
+/Users/edipo/spec/language/or_spec.rb
 /Users/edipo/spec/language/numbers_spec.rb
 /Users/edipo/spec/language/loop_spec.rb
 /Users/edipo/spec/language/module_spec.rb
 /Users/edipo/spec/language/not_spec.rb
 /Users/edipo/spec/language/and_spec.rb
 /Users/edipo/spec/language/range_spec.rb
+/Users/edipo/spec/language/def_spec.rb

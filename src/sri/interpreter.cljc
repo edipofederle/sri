@@ -11,10 +11,13 @@
             [sri.ruby-complex :refer [->RubyComplex ruby-complex?]]
             [sri.ruby-range :refer [->RubyRange]]
             [sri.ruby-method-registry :refer [method-lookup]]
-            [sri.ruby-protocols :refer [to-s RubyComparable ruby-eq]]))
+            [sri.ruby-protocols :refer [to-s RubyComparable RubyInspectable RubyObject ruby-eq ruby-class]]))
 
 
 (declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program)
+
+;; Global variables store
+(defonce global-variables (atom {}))
 
 ;; =============================================================================
 ;; Method Definition Record and AST Scoping
@@ -96,6 +99,9 @@
     (ruby-hash? obj) "Hash"
     (vector? obj) "Array" ; Legacy support
     (map? obj) "Hash"     ; Legacy support
+    ;; Check if object implements RubyObject protocol
+    (satisfies? RubyObject obj)
+    (ruby-class obj)
     :else ::method-not-found))
 
 (defn interpret-literal
@@ -365,16 +371,6 @@
   (if (and (map? class-obj) (:name class-obj))
     (:name class-obj)
     class-obj))
-
-(defn create-rspec-matcher
-  "Create a simple RSpec matcher with the given class name."
-  [class-name]
-  (reify
-    ruby-classes/RubyObject
-    (ruby-class [_] (str "Spec::Matchers::" class-name))
-    (ruby-ancestors [_] [(str "Spec::Matchers::" class-name) "Object" "Kernel" "BasicObject"])
-    (respond-to? [_ method-name] false)
-    (get-ruby-method [this method-name] nil)))
 
 (defn handle-compound-assignment
   "Handle compound assignment operations (+=, -=, *=, /=) with reduced duplication."
@@ -711,43 +707,6 @@
   "Try to execute a built-in instance method, return ::method-not-found sentinel if method not found."
   [receiver method-name args]
   (case method-name
-    ;; Spec assertion method - works on all objects
-    ;; hack for now to play with ruby specs
-    ;; TODO to be removed
-    "should" (reify
-               ruby-classes/RubyObject
-               (ruby-class [_] "Spec::Expectations::ObjectExpectation")
-               (ruby-ancestors [_] ["Spec::Expectations::ObjectExpectation" "Object" "Kernel" "BasicObject"])
-               (respond-to? [_ method-name]
-                 (contains? #{"==" "!=" "be_an_instance_of"} method-name))
-               (get-ruby-method [this method-name]
-                 (case method-name
-                   "==" (fn [_ expected]
-                         (= receiver expected))
-                   "!=" (fn [_ expected]
-                         (not= receiver expected))
-                   "be_an_instance_of" (fn [_ expected-class]
-                                        (let [actual-class (ruby-class-name receiver)
-                                              expected-class-name (extract-class-name expected-class)]
-                                          (= actual-class expected-class-name)))
-                   nil))
-
-               ruby-classes/RubyInspectable
-               (to-s [_] "#<Spec::Expectations::ObjectExpectation>")
-               (inspect [_] "#<Spec::Expectations::ObjectExpectation>")
-
-               ruby-classes/RubyComparable
-               (ruby-eq [this expected]
-                 (= receiver expected)))
-
-    ;; hack for now to play with ruby specs
-    ;; TODO to be removed
-    "be_an_instance_of" (if (= 1 (count args))
-                         (let [expected-class (first args)
-                               actual-class (ruby-class-name receiver)
-                               expected-class-name (extract-class-name expected-class)]
-                           (= actual-class expected-class-name))
-                         ::method-not-found)
     "length" (cond
                (ruby-array? receiver) (count @(:data receiver))
                (vector? receiver) (count receiver)
@@ -1058,20 +1017,6 @@
                           imaginary (or (second args) 0)]
                       (->RubyComplex real imaginary)))
 
-        ;; RSpec matchers
-        "be_nil" (create-rspec-matcher "BeNil")
-        "be_true" (create-rspec-matcher "BeTrue")
-        "be_false" (create-rspec-matcher "BeFalse")
-
-        "be_an_instance_of" (if (= 1 (count args))
-                              (let [expected-class (first args)]
-                                ;; Return a matcher function
-                                (fn [obj]
-                                  (let [actual-class (ruby-class-name obj)]
-                                    (= actual-class expected-class))))
-                              (throw (ex-info "be_an_instance_of requires exactly one argument"
-                                             {:method method-name :args args})))
-
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
@@ -1100,18 +1045,8 @@
       (method-defined? variables var-name)
       (let [method-def (resolve-method-definition variables var-name)]
         (interpret-user-method ast entity-id variables method-def []))
-
-      ;; Check for RSpec matchers
-      (contains? #{"be_nil" "be_true" "be_false"} var-name)
-      (case var-name
-        "be_nil" (create-rspec-matcher "BeNil")
-        "be_true" (create-rspec-matcher "BeTrue")
-        "be_false" (create-rspec-matcher "BeFalse"))
-
-      ;; Neither variable nor method found
       :else
-      (throw (ex-info (str "Undefined variable: " var-name)
-                      {:variable var-name})))))
+      nil)))
 
 (defn interpret-qualified-identifier
   "Interpret a qualified identifier like Module::Class."
@@ -1717,6 +1652,21 @@
       (throw (ex-info (str "Instance variable " var-name " assigned outside of instance context")
                      {:variable var-name :value value})))))
 
+(defn interpret-global-variable-access
+  "Interpret global variable access ($var)."
+  [ast entity-id variables]
+  (let [var-name (parser/get-component ast entity-id :variable)]
+    (get @global-variables var-name)))
+
+(defn interpret-global-variable-assignment
+  "Interpret global variable assignment ($var = value)."
+  [ast entity-id variables]
+  (let [var-name (parser/get-component ast entity-id :variable)
+        value-id (parser/get-component ast entity-id :value)
+        value (interpret-expression ast value-id variables)]
+    (swap! global-variables assoc var-name value)
+    value))
+
 (defn interpret-block
   "Interpret a block of statements."
   [ast entity-id variables]
@@ -1758,6 +1708,8 @@
        :indexed-assignment-statement (interpret-indexed-assignment ast entity-id variables)
        :instance-variable-access (interpret-instance-variable-access ast entity-id variables)
        :instance-variable-assignment (interpret-instance-variable-assignment ast entity-id variables)
+       :global-variable-access (interpret-global-variable-access ast entity-id variables)
+       :global-variable-assignment (interpret-global-variable-assignment ast entity-id variables)
        :method-definition (interpret-method-definition ast entity-id variables)
        :module-definition (interpret-module-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables)
@@ -1818,6 +1770,8 @@
        :indexed-assignment-statement (interpret-indexed-assignment ast entity-id variables)
        :instance-variable-access (interpret-instance-variable-access ast entity-id variables)
        :instance-variable-assignment (interpret-instance-variable-assignment ast entity-id variables)
+       :global-variable-access (interpret-global-variable-access ast entity-id variables)
+       :global-variable-assignment (interpret-global-variable-assignment ast entity-id variables)
        :method-definition (interpret-method-definition ast entity-id variables)
        :module-definition (interpret-module-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables opts)
