@@ -1,15 +1,6 @@
 # Sri - Ruby Interpreter
 
 A Ruby interpreter implemented in Clojure with support for GraalVM native image compilation.
-
-## Features
-
-- **Tokenizer**: Lexical analysis of Ruby source code
-- **Parser**: Builds Abstract Syntax Trees (AST) from tokens
-- **Interpreter**: Direct AST interpretation without bytecode generation
-- **GraalVM Support**: Compiles to native binaries for fast startup
-- **Ruby Syntax**: Support for method definitions, method calls, variables, and basic control flow
-
 ## Building
 
 ### Prerequisites
@@ -29,7 +20,7 @@ lein uberjar
 
 ## Usage
 
-### As a Library (NEW!)
+### As a Library
 
 Sri can now be used as a Clojure library for safe Ruby evaluation:
 
@@ -41,7 +32,7 @@ Sri can now be used as a Clojure library for safe Ruby evaluation:
 (sri/eval-string "puts('Hello World!')")     ; prints "Hello World!", returns nil
 
 ;; With custom variables
-(sri/eval-string "name + ' is ' + age.to_s + ' years old'" 
+(sri/eval-string "name + ' is ' + age.to_s + ' years old'"
                  {:namespaces {"name" "Alice" "age" 30}})
 ; => "Alice is 30 years old"
 
