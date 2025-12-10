@@ -222,10 +222,12 @@
         ;; Create a new variable scope with block parameters bound to arguments
         block-variables (atom @variables)]
 
-    ;; Bind block parameters to arguments
-    (when (and block-params (seq block-params) (seq block-args))
-      (doseq [[param arg] (map vector block-params block-args)]
-        (swap! block-variables assoc param arg)))
+    ;; Bind block parameters to arguments (pad with nil for missing args)
+    (when (and block-params (seq block-params))
+      (let [padded-args (concat block-args (repeat nil))
+            param-arg-pairs (map vector block-params padded-args)]
+        (doseq [[param arg] param-arg-pairs]
+          (swap! block-variables assoc param arg))))
 
     ;; Execute block body with the new variable scope
     (if block-body-ids
@@ -1017,6 +1019,16 @@
                           imaginary (or (second args) 0)]
                       (->RubyComplex real imaginary)))
 
+        "yield" (let [block-id (get @variables "__block_id")
+                      block-ast (get @variables "__block_ast")]
+                  (if block-id
+                    ;; Execute the stored block with yield arguments
+                    (execute-block block-ast block-id variables args)
+                    ;; No block provided - throw LocalJumpError (Ruby behavior)
+                    (throw (ex-info "no block given (yield)" 
+                                   {:type :local-jump-error 
+                                    :method "yield"}))))
+
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
@@ -1028,7 +1040,13 @@
   [ast entity-id variables method-def args]
   (let [{:keys [params body-id ast]} method-def
         method-ast ast ; Use the AST from the method definition record
-        local-vars (bind-method-parameters variables params args)]
+        local-vars (bind-method-parameters variables params args)
+        ;; Check if this method call has a block attached
+        block-id (parser/get-component ast entity-id :block)]
+    ;; Store block context in local variables if a block is provided
+    (when block-id
+      (swap! local-vars assoc "__block_id" block-id)
+      (swap! local-vars assoc "__block_ast" ast))
     ;; Execute method body with return handling
     (execute-with-return-handling method-ast body-id local-vars)))
 
@@ -1046,7 +1064,9 @@
       (let [method-def (resolve-method-definition variables var-name)]
         (interpret-user-method ast entity-id variables method-def []))
       :else
-      nil)))
+      (throw (ex-info (str "undefined variable: " var-name)
+                      {:variable var-name
+                       :type :undefined-variable})))))
 
 (defn interpret-qualified-identifier
   "Interpret a qualified identifier like Module::Class."

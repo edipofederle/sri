@@ -840,6 +840,10 @@
                                                          :operand operand-id
                                                          :position {:line (:line splat-token) :column (:column splat-token)})]
                        [(assoc state-after-operand :ast new-ast) splat-id]))
+                   (when (match-token? state :keyword "yield")
+                     (let [[yield-token state-after-yield] (consume-token state)]
+                       ;; Parse yield like a method call - can have arguments
+                       (parse-method-call state-after-yield nil "yield" yield-token)))
                    (when (match-token? state :identifier)
                      (let [[id-token state-after-id] (consume-token state)
                            identifier-value (:value id-token)]
