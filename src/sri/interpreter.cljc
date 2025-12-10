@@ -425,9 +425,9 @@
                               {:left-side left-node-type}))))
 
       ;; Compound assignment operators
-      "+=" (handle-compound-assignment ast left-id right-id variables + 0)
-      "-=" (handle-compound-assignment ast left-id right-id variables - 0)
-      "*=" (handle-compound-assignment ast left-id right-id variables * 1)
+      "+=" (handle-compound-assignment ast left-id right-id variables +' 0)
+      "-=" (handle-compound-assignment ast left-id right-id variables -' 0)
+      "*=" (handle-compound-assignment ast left-id right-id variables *' 1)
       "/=" (handle-compound-assignment ast left-id right-id variables / 1)
 
       ;; Regular operators (evaluate both operands)
@@ -441,10 +441,10 @@
                 ;; String concatenation for primitive strings
                 (or (string? left-val) (string? right-val))
                 (str left-val right-val)
-                ;; Numeric addition
-                :else (+ left-val right-val))
-          "-" (- left-val right-val)
-          "*" (* left-val right-val)
+                ;; Numeric addition with arbitrary precision
+                :else (+' left-val right-val))
+          "-" (-' left-val right-val)
+          "*" (*' left-val right-val)
           "/" (if (and (integer? left-val) (integer? right-val))
                 ;; Ruby-style integer division
                 (quot left-val right-val)
