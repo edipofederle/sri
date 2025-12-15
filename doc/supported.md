@@ -1,63 +1,165 @@
 # SRI Ruby Interpreter - Supported Features
 
-## Numeric Literals
+**Status Legend:**
+- ✅ **Fully Working** - Feature tested and works in examples
+- 🔧 **Implemented but Untested** - Code exists but no working examples
+- ❌ **Not Implemented** - Feature not available
 
-| Feature | Example | Result | Status |
-|---------|---------|--------|--------|
-| **Basic Numbers** |
-| Decimal integers | `435`, `1234` | Standard integers | ✅ |
-| Underscores in numbers | `4_3_5_7` | `4357` | ✅ |
-| Decimal points | `4.35`, `0.75` | Floating point numbers | ✅ |
-| Scientific notation | `1.2e-3` | `0.0012` | ✅ |
-| **Different Bases** |
-| Hexadecimal | `0xffff`, `0XFFFF` | `65535` | ✅ |
-| Binary | `0b01011`, `0B01011` | `11` | ✅ |
-| Octal | `0377` | `255` | ✅ |
-| **Rational Numbers (r suffix)** |
-| Integer rationals | `3r`, `-3r` | `Rational(3, 1)`, `Rational(-3, 1)` | ✅ |
-| Float rationals | `1.0r`, `0.3r` | `Rational(1, 1)`, `Rational(3, 10)` | ✅ |
-| Large decimal rationals | `0.0174532925199432957r` | `Rational(174532925199432957, 10000000000000000000)` | ✅ |
-| Bignum rationals | `1111111111111111111111111111111111111111111111r` | `Rational(1111111111111111111111111111111111111111111111, 1)` | ✅ |
-| Hexadecimal rationals | `0xffr`, `-0xffr` | `Rational(255, 1)`, `Rational(-255, 1)` | ✅ |
-| Octal rationals | `042r`, `-042r` | `Rational(34, 1)`, `Rational(-34, 1)` | ✅ |
-| Binary rationals | `0b1111r`, `-0b1111r` | `Rational(15, 1)`, `Rational(-15, 1)` | ✅ |
-| **Complex Numbers (i suffix)** |
-| Integer complex | `5i`, `-5i` | `Complex(0, 5)`, `Complex(0, -5)` | ✅ |
-| Decimal complex | `0.6i`, `-0.6i` | `Complex(0, 0.6)`, `Complex(0, -0.6)` | ✅ |
-| Hexadecimal complex | `0xffi`, `-0xffi` | `Complex(0, 255)`, `Complex(0, -255)` | ✅ |
-| Octal complex | `042i`, `-042i` | `Complex(0, 34)`, `Complex(0, -34)` | ✅ |
-| Binary complex | `0b1110i`, `-0b1110i` | `Complex(0, 14)`, `Complex(0, -14)` | ✅ |
+## Core Language Features
 
-## Implementation Details
+### Numbers and Arithmetic
+| Feature | Example | Status |
+|---------|---------|--------|
+| Integer literals | `42`, `1234`, `4_3_5_7` | ✅ |
+| Float literals | `3.14`, `0.75` | ✅ |
+| Negative numbers | `-5`, `-3.14` | ✅ |
+| Arithmetic operations | `+`, `-`, `*`, `/` | ✅ |
+| Order of operations | `10 - 5 * 3` → `-5` | ✅ |
+| Integer methods | `.positive?`, `.negative?`, `.zero?`, `.even?` | ✅ |
+| Integer utility methods | `.inc`, `.incn(5)`, `.double` | ✅ |
+| Integer class methods | `Integer.max(100,20)`, `Integer.sqrt(625)` | ✅ |
+| Type checking | `.real?`, `.integer?` | ✅ |
+| Hexadecimal literals | `0xffff`, `0XFFFF` | 🔧 |
+| Binary literals | `0b01011`, `0B01011` | 🔧 |
+| Octal literals | `0377` | 🔧 |
+| Scientific notation | `1.2e-3` | 🔧 |
+| Rational literals | `3r`, `1.0r`, `0xffr` | 🔧 |
+| Complex literals | `5i`, `0.6i`, `0xffi` | 🔧 |
 
-| Component | Feature | Description | Status |
-|-----------|---------|-------------|--------|
-| **Tokenizer** |
-| Rational suffix recognition | 'r' suffix support | Recognizes 'r' suffix across all number formats | ✅ |
-| Complex suffix recognition | 'i' suffix support | Recognizes 'i' suffix across all number formats | ✅ |
-| Visual separators | Underscore handling | Handles underscores in all number formats | ✅ |
-| Large number support | BigInteger integration | Supports BigInteger for very large numbers | ✅ |
-| **Parser** |
-| AST node creation | Rational/Complex literals | Creates proper AST nodes for special literals | ✅ |
-| Decimal conversion | Float to fraction | Handles decimal-to-fraction conversion | ✅ |
-| Overflow prevention | BigInteger usage | Uses BigInteger for large numbers | ✅ |
-| **Ruby Classes** |
-| RubyRational | Full rational class | Complete rational number implementation | ✅ |
-| RubyComplex | Full complex class | Complete complex number implementation | ✅ |
-| Protocol implementation | Ruby protocols | RubyObject, RubyInspectable, RubyComparable | ✅ |
-| Method registration | Standard operations | +, -, *, /, ==, !=, <=>, etc. | ✅ |
-| **Global Functions** |
-| Rational constructor | `Rational(num, den)` | Create rational numbers | ✅ |
-| Complex constructor | `Complex(real, imag)` | Create complex numbers | ✅ |
-| **Arithmetic** |
-| Rational operations | +, -, *, / | With automatic simplification | ✅ |
-| Complex operations | +, -, *, / | Standard complex arithmetic | ✅ |
-| Mixed operations | Cross-type arithmetic | Operations with regular numbers | ✅ |
-| Comparison operations | ==, !=, <=> | Equality and ordering | ✅ |
-| **Utility Methods** |
-| String representation | `to_s`, `inspect` | Proper string formatting | ✅ |
-| Type conversion | `to_f`, `to_i` | Convert to float/integer | ✅ |
-| Complex accessors | `real`, `imaginary` | Access complex components | ✅ |
-| Rational accessors | `numerator`, `denominator` | Access rational components | ✅ |
+### Strings
+| Feature | Example | Status |
+|---------|---------|--------|
+| String literals | `"hello"`, `'world'` | ✅ |
+| String concatenation | `"Hello " + "World"` | ✅ |
+| String interpolation | `"#{name} is #{age} years old"` | ✅ |
+| Expression interpolation | `"Sum: #{10 + 20}"` | ✅ |
+| String conversion | `.to_s` on numbers | ✅ |
+| String indexing | `str[0]`, `str[-1]` | ✅ |
+| String slicing | `str[1, 3]` | ✅ |
+| String methods | `.length`, `.size`, `.empty?` | ✅ |
+| String comparison | `==`, `!=` | ✅ |
 
-This comprehensive numeric system handles all Ruby number literal formats and provides full arithmetic and utility support for rational and complex numbers.
+### Symbols
+| Feature | Example | Status |
+|---------|---------|--------|
+| Symbol literals | `:hello`, `:ruby_symbol` | ✅ |
+| Symbol methods | `.to_s`, `.inspect` | ✅ |
+| Symbol properties | `.length`, `.size` | ✅ |
+| Symbol conversion | `.id2name` | ✅ |
+
+### Arrays
+| Feature | Example | Status |
+|---------|---------|--------|
+| Array literals | `[1, 2, 3]`, `[]` | ✅ |
+| Array access | `arr[0]`, `arr[-1]` | ✅ |
+| Array assignment | `arr[0] = 42` | ✅ |
+| Array expansion | `arr[7] = 99` (auto-fills with nil) | ✅ |
+| Array methods | `.length`, `.first`, `.last`, `.empty?` | ✅ |
+| Array iteration | `.each do |x|` and `.each { |x| }` | ✅ |
+| Mixed type arrays | `[1, "hello", :symbol]` | ✅ |
+
+### Hashes
+| Feature | Example | Status |
+|---------|---------|--------|
+| Hash literals | `{"key" => "value"}`, `{}` | ✅ |
+| Hash access | `hash["key"]` | ✅ |
+| Hash assignment | `hash["key"] = "value"` | ✅ |
+| Mixed keys/values | `{1 => "A", "name" => "Alice"}` | ✅ |
+| Hash methods | `.size`, `.length`, `.empty?` | ✅ |
+| Key checking | `.key?`, `.include?`, `.member?` | ✅ |
+| Key/value access | `.keys`, `.values` | ✅ |
+| Hash modification | `.delete`, `.remove` | ✅ |
+
+### Ranges
+| Feature | Example | Status |
+|---------|---------|--------|
+| Inclusive ranges | `1..5` | ✅ |
+| Exclusive ranges | `1...5` | ✅ |
+| Range methods | `.to_a`, `.include?`, `.size`, `.count` | ✅ |
+| Negative ranges | `-2..2` | ✅ |
+| Single element ranges | `5..5` | ✅ |
+| Empty ranges | `5...5` | ✅ |
+| Range in case statements | `when 1..3` | ✅ |
+
+## Object-Oriented Programming
+
+### Classes
+| Feature | Example | Status |
+|---------|---------|--------|
+| Class definition | `class Person; end` | ✅ |
+| Class instantiation | `Person.new` | ✅ |
+| Constructor methods | `def initialize(name); end` | ✅ |
+| Instance variables | `@name = name` | ✅ |
+| Instance methods | `def greet; end` | ✅ |
+| Method parameters | `def initialize(name, age)` | ✅ |
+| Attr accessors | `attr_accessor :name, :age` | ✅ |
+| Attr readers | `attr_reader :name` | ✅ |
+| Attr writers | `attr_writer :age` | ✅ |
+
+### Methods
+| Feature | Example | Status |
+|---------|---------|--------|
+| Method definition | `def method_name; end` | ✅ |
+| Method parameters | `def max(a, b); end` | ✅ |
+| Method calls | `object.method_name` | ✅ |
+| Method return values | `return value` or implicit return | ✅ |
+| Method chaining | `object.method1.method2` | ✅ |
+
+## Control Flow
+
+### Conditionals
+| Feature | Example | Status |
+|---------|---------|--------|
+| If statements | `if condition; end` | ✅ |
+| If-else statements | `if condition; else; end` | ✅ |
+| Inline conditionals | `if a > b; a; else; b; end` | ✅ |
+| Case-when statements | `case var; when 1..3; end` | ✅ |
+| Comparison operators | `>`, `<`, `>=`, `<=`, `==`, `!=` | ✅ |
+
+### Blocks and Iteration
+| Feature | Example | Status |
+|---------|---------|--------|
+| Block syntax (do-end) | `.each do |item|; end` | ✅ |
+| Block syntax (braces) | `.each { |item| }` | ✅ |
+| Block parameters | `|x|`, `|key, value|` | ✅ |
+| Array iteration | `[1,2,3].each { |x| puts x }` | ✅ |
+| Yield statements | `yield value` | ✅ |
+
+### Loops
+| Feature | Example | Status |
+|---------|---------|--------|
+| For loops | `for i in 1..5; end` | ✅ |
+| While loops | `while condition; end` | ✅ |
+| Until loops | `until condition; end` | ✅ |
+
+## Notable Features Verified in Examples
+
+SRI successfully implements a substantial subset of Ruby's core features, as demonstrated by the working examples:
+
+### Data Types and Literals
+- **Numbers**: Full integer and float support with arithmetic operations
+- **Strings**: Complete string handling with interpolation and methods
+- **Arrays**: Dynamic arrays with indexing, assignment, and iteration
+- **Hashes**: Key-value storage with string and numeric keys
+- **Symbols**: Immutable symbol literals with standard methods
+- **Ranges**: Both inclusive (`..`) and exclusive (`...`) ranges
+
+### Object System
+- **Classes**: Full class definition, instantiation, and method support
+- **Attributes**: `attr_accessor`, `attr_reader`, and `attr_writer` work correctly
+- **Instance Variables**: Proper `@variable` scoping and access
+- **Methods**: Parameter handling, return values, and method chaining
+
+### Advanced Features
+- **String Interpolation**: Expression evaluation within `#{}` syntax
+- **Block Iteration**: Both `do..end` and `{..}` block syntax
+- **Control Flow**: If-else, case-when, and loop constructs
+- **Method Calls**: Chained method calls and proper argument handling
+
+### Code Quality
+All examples include expected output verification, demonstrating that SRI produces correct Ruby-compatible results. The interpreter handles edge cases well, such as array expansion, negative indexing, empty collections, and mixed data types.
+
+### Implementation Notes
+- **Alternative Number Bases**: Code exists for hex/binary/octal but lacks working examples
+- **Advanced Literals**: Rational and complex number support is implemented but untested
+- **Error Handling**: Proper exception handling for syntax and runtime errors
