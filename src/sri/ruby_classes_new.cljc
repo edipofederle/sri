@@ -10,6 +10,9 @@
             [sri.ruby-string :as ruby-str]
             [sri.ruby-range :as ruby-range]
             [sri.ruby-array :as ruby-array]
+            [sri.ruby-hash :as ruby-hash]
+            [sri.ruby-rational :as ruby-rational]
+            [sri.ruby-complex :as ruby-complex]
             [sri.ruby-numeric :as ruby-numeric]))
 
 ;; =============================================================================
@@ -46,6 +49,20 @@
 (def array-push! ruby-array/array-push!)
 (def array-pop! ruby-array/array-pop!)
 
+;; Hash
+(def create-hash ruby-hash/create-hash)
+(def create-empty-hash ruby-hash/create-empty-hash)
+(def map->ruby-hash ruby-hash/map->ruby-hash)
+(def ruby-hash? ruby-hash/ruby-hash?)
+
+;; Rational
+(defn create-rational [numerator denominator] (ruby-rational/->RubyRational numerator denominator))
+(def ruby-rational? ruby-rational/ruby-rational?)
+
+;; Complex
+(defn create-complex [real imaginary] (ruby-complex/->RubyComplex real imaginary))
+(def ruby-complex? ruby-complex/ruby-complex?)
+
 ;; Numeric
 (def ruby-numeric? ruby-numeric/ruby-numeric?)
 (def ruby-integer? ruby-numeric/ruby-integer?)
@@ -62,6 +79,9 @@
 (def ->RubyString ruby-str/->RubyString)
 (def ->RubyRange ruby-range/->RubyRange)
 (def ->RubyArray ruby-array/->RubyArray)
+(def ->RubyHash ruby-hash/->RubyHash)
+(def ->RubyRational ruby-rational/->RubyRational)
+(def ->RubyComplex ruby-complex/->RubyComplex)
 
 ;; =============================================================================
 ;; Method Call Interface

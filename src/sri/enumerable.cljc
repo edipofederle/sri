@@ -1,7 +1,7 @@
 (ns sri.enumerable
   "Enumerable module for Sri - provides iteration methods for collections"
   (:require [sri.parser :as parser]
-            [sri.ruby-array :refer [ruby-array?]]))
+            [sri.ruby-classes-new :refer [ruby-array?]]))
 
 ;; Forward declaration for execute-block (defined in interpreter)
 (declare execute-block)
@@ -10,18 +10,18 @@
 (defn enumerable?
   "Check if an object supports enumerable operations."
   [obj]
-  (or (vector? obj) 
-      (ruby-array? obj) ; Ruby arrays
-      (and (record? obj) 
-           (contains? obj :start) ; duck typing for ranges
+  (or (vector? obj)
+      (ruby-array? obj)
+      (and (record? obj)
+           (contains? obj :start)
            (contains? obj :end)
            (contains? obj :inclusive?))))
 
 (defn ruby-range?
-  "Check if a value is a Ruby range (duck typing approach)."
+  "Check if a value is a Ruby range"
   [value]
-  (and (record? value) 
-       (contains? value :start) 
+  (and (record? value)
+       (contains? value :start)
        (contains? value :end)
        (contains? value :inclusive?)))
 
@@ -52,11 +52,11 @@
     (vector? obj)
     (doseq [item obj]
       (element-fn item))
-    
+
     (ruby-array? obj) ; Ruby arrays
     (doseq [item @(:data obj)]
       (element-fn item))
-    
+
     (ruby-range? obj)
     (let [{:keys [start end inclusive?]} obj]
       (if (char-range? obj)
@@ -66,11 +66,11 @@
               limit (if inclusive? (inc end-ascii) end-ascii)]
           (doseq [ascii-val (range start-ascii limit)]
             (element-fn (int-to-char ascii-val))))
-        ;; Numeric range iteration  
+        ;; Numeric range iteration
         (let [limit (if inclusive? (inc end) end)]
           (doseq [item (range start limit)]
             (element-fn item)))))
-    
+
     :else
     (throw (ex-info "Object is not enumerable" {:object obj}))))
 
@@ -81,8 +81,8 @@
   (let [block-id (parser/get-component ast entity-id :block)]
     (if block-id
       (do
-        (each-impl receiver 
-                   (fn [item] 
+        (each-impl receiver
+                   (fn [item]
                      (execute-block-fn ast block-id variables [item])))
         receiver) ; Return the original receiver like Ruby
       (throw (ex-info "each requires a block" {:receiver receiver})))))
@@ -93,7 +93,7 @@
   (let [block-id (parser/get-component ast entity-id :block)]
     (if block-id
       (let [results (atom [])]
-        (each-impl receiver 
+        (each-impl receiver
                    (fn [item]
                      (let [result (execute-block-fn ast block-id variables [item])]
                        (swap! results conj result))))
@@ -106,7 +106,7 @@
   (let [block-id (parser/get-component ast entity-id :block)]
     (if block-id
       (let [results (atom [])]
-        (each-impl receiver 
+        (each-impl receiver
                    (fn [item]
                      (let [result (execute-block-fn ast block-id variables [item])]
                        (when result ; truthy in Ruby
@@ -120,7 +120,7 @@
   (let [block-id (parser/get-component ast entity-id :block)]
     (if block-id
       (let [results (atom [])]
-        (each-impl receiver 
+        (each-impl receiver
                    (fn [item]
                      (let [result (execute-block-fn ast block-id variables [item])]
                        (when-not result ; falsy in Ruby
@@ -136,7 +136,7 @@
       (let [found (atom nil)
             found? (atom false)]
         (try
-          (each-impl receiver 
+          (each-impl receiver
                      (fn [item]
                        (let [result (execute-block-fn ast block-id variables [item])]
                          (when result
@@ -156,7 +156,7 @@
     (if block-id
       (let [found? (atom false)]
         (try
-          (each-impl receiver 
+          (each-impl receiver
                      (fn [item]
                        (let [result (execute-block-fn ast block-id variables [item])]
                          (when result
@@ -175,7 +175,7 @@
     (if block-id
       (let [all-true? (atom true)]
         (try
-          (each-impl receiver 
+          (each-impl receiver
                      (fn [item]
                        (let [result (execute-block-fn ast block-id variables [item])]
                          (when-not result

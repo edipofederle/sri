@@ -19,12 +19,12 @@
 
 (defn eval-string
   "Evaluate a Ruby string and return the result.
-   
+
    Usage:
    (eval-string \"1 + 2\")           ; => 3
    (eval-string \"puts 'hello'\")    ; prints hello, returns nil
    (eval-string \"x = 42; x * 2\" opts)  ; => 84
-   
+
    Options (future):
    - :namespaces - custom variables and methods
    - :allow-methods - allowed method names
@@ -52,7 +52,7 @@
         (let [source (slurp filename)
               exit-code (evaluate source)]
           (System/exit exit-code))
-        (catch java.io.FileNotFoundException e
+        (catch java.io.FileNotFoundException _
           (println "Error: File not found:" filename)
           (System/exit 1))
         (catch Exception e

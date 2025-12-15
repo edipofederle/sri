@@ -5,13 +5,8 @@
             [clojure.string]
             [sri.enumerable :as enum]
             [sri.ruby-classes-new :as ruby-classes]
-            [sri.ruby-array :refer [->RubyArray ruby-array?]]
-            [sri.ruby-hash :refer [->RubyHash ruby-hash? create-empty-hash map->ruby-hash]]
-            [sri.ruby-rational :refer [->RubyRational ruby-rational?]]
-            [sri.ruby-complex :refer [->RubyComplex ruby-complex?]]
-            [sri.ruby-range :refer [->RubyRange]]
-            [sri.ruby-method-registry :refer [method-lookup]]
-            [sri.ruby-protocols :refer [to-s RubyComparable RubyInspectable RubyObject ruby-eq ruby-class]]))
+            [sri.ruby-protocols :refer [to-s RubyComparable RubyInspectable RubyObject ruby-eq ruby-class]]
+            [sri.ruby-method-registry :refer [method-lookup]]))
 
 
 (declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program)
@@ -95,8 +90,8 @@
     (integer? obj) "Integer"
     (float? obj) "Float"
     (keyword? obj) "Symbol"
-    (ruby-array? obj) "Array"
-    (ruby-hash? obj) "Hash"
+    (ruby-classes/ruby-array? obj) "Array"
+    (ruby-classes/ruby-hash? obj) "Hash"
     (vector? obj) "Array" ; Legacy support
     (map? obj) "Hash"     ; Legacy support
     ;; Check if object implements RubyObject protocol
@@ -120,14 +115,14 @@
   [ast entity-id]
   (let [numerator (parser/get-component ast entity-id :numerator)
         denominator (parser/get-component ast entity-id :denominator)]
-    (->RubyRational numerator denominator)))
+    (ruby-classes/create-rational numerator denominator)))
 
 (defn interpret-complex-literal
   "Interpret a complex literal node."
   [ast entity-id]
   (let [real (parser/get-component ast entity-id :real)
         imaginary (parser/get-component ast entity-id :imaginary)]
-    (->RubyComplex real imaginary)))
+    (ruby-classes/create-complex real imaginary)))
 
 (defn interpret-interpolated-string
   "Interpret an interpolated string by evaluating expressions and concatenating."
@@ -192,10 +187,10 @@
                                            (clojure.string/replace "\u0002" "\t")
                                            (clojure.string/replace "\u0003" "\n"))))
                                    raw-words)]
-        (->RubyArray (atom (vec interpolated-words))))
+        (apply ruby-classes/create-array interpolated-words))
       ;; Handle %w() without interpolation
       (let [words (parser/get-component ast entity-id :words)]
-        (->RubyArray (atom (vec words)))))))
+        (apply ruby-classes/create-array words)))))
 
 (defn interpret-array-literal
   "Interpret an array literal like [1, 2, 3]."
@@ -211,8 +206,8 @@
                                              result  ; Splat results are already vectors, flatten them
                                              [result]))) ; Regular elements become single-item vectors
                                        element-ids)]
-        (->RubyArray (atom (vec flattened-elements))))
-      (->RubyArray (atom [])))))
+        (apply ruby-classes/create-array flattened-elements))
+      (ruby-classes/create-empty-array))))
 
 (defn execute-block
   "Execute a block with given parameters."
@@ -247,8 +242,8 @@
                                     (assoc hash key value)))
                                 {}
                                 pairs)]
-        (map->ruby-hash initial-map))
-      (create-empty-hash))))
+        (ruby-classes/map->ruby-hash initial-map))
+      (ruby-classes/create-empty-hash))))
 
 (defn interpret-array-access
   "Interpret array or hash access like arr[0] or hash[key]."
@@ -259,7 +254,7 @@
         index-val (interpret-expression ast index-id variables)]
     (cond
       ;; Ruby array access (check first)
-      (ruby-array? receiver-val)
+      (ruby-classes/ruby-array? receiver-val)
       (cond
         (not (integer? index-val))
         (throw (ex-info "Array index must be integer" {:array receiver-val :index index-val}))
@@ -272,7 +267,7 @@
             nil))) ; Ruby returns nil for out-of-bounds access
 
       ;; Ruby hash access
-      (ruby-hash? receiver-val)
+      (ruby-classes/ruby-hash? receiver-val)
       (get @(:data receiver-val) index-val)
 
       ;; Legacy immutable hash access (for backward compatibility)
@@ -324,13 +319,13 @@
     (when-let [current-receiver (get @variables array)]
       (cond
         ;; Ruby hash assignment
-        (ruby-hash? current-receiver)
+        (ruby-classes/ruby-hash? current-receiver)
         (do
           (swap! (:data current-receiver) assoc index-val new-value)
           new-value)
 
         ;; Ruby array assignment
-        (ruby-array? current-receiver)
+        (ruby-classes/ruby-array? current-receiver)
         (if (integer? index-val)
           (let [current-data @(:data current-receiver)
                 idx (if (< index-val 0) (+ (count current-data) index-val) index-val)]
@@ -494,7 +489,7 @@
   (let [start-id (parser/get-component ast entity-id :start)
         inclusive? (parser/get-component ast entity-id :inclusive?)
         start-val (interpret-expression ast start-id variables)]
-    (->RubyRange start-val nil inclusive?)))
+    (ruby-classes/->RubyRange start-val nil inclusive?)))
 
 (defn interpret-beginless-range
   "Interpret a beginless range like ..1 or ...1"
@@ -502,7 +497,7 @@
   (let [end-id (parser/get-component ast entity-id :end)
         inclusive? (parser/get-component ast entity-id :inclusive?)
         end-val (interpret-expression ast end-id variables)]
-    (->RubyRange nil end-val inclusive?)))
+    (ruby-classes/->RubyRange nil end-val inclusive?)))
 
 (defn interpret-unary-operation
   "Interpret a unary operation like -5 or !true."
@@ -577,8 +572,8 @@
                        :body-id nil}
                       (throw (ex-info "Module.new does not accept arguments" {:args args})))
     ["Range" "new"] (case (count args)
-                      2 (->RubyRange (first args) (second args) true)  ; Default inclusive
-                      3 (->RubyRange (first args) (second args) (nth args 2))  ; Explicit inclusive flag
+                      2 (ruby-classes/->RubyRange (first args) (second args) true)  ; Default inclusive
+                      3 (ruby-classes/->RubyRange (first args) (second args) (nth args 2))  ; Explicit inclusive flag
                       (throw (ex-info "Range.new requires 2 or 3 arguments" {:args args})))
     (throw (ex-info (str "Unknown Ruby class method: " class-name "." method-name)
                     {:class class-name :method method-name}))))
@@ -710,27 +705,27 @@
   [receiver method-name args]
   (case method-name
     "length" (cond
-               (ruby-array? receiver) (count @(:data receiver))
+               (ruby-classes/ruby-array? receiver) (count @(:data receiver))
                (vector? receiver) (count receiver)
                (string? receiver) (count receiver)
                (keyword? receiver) (count (name receiver)) ; Length of symbol name
-               (ruby-hash? receiver) (count @(:data receiver))
+               (ruby-classes/ruby-hash? receiver) (count @(:data receiver))
                (map? receiver) (count receiver)
                :else ::method-not-found)
     "size" (cond
              (ruby-classes/ruby-range? receiver)
              (ruby-classes/invoke-ruby-method receiver :size)
-             (ruby-array? receiver) (count @(:data receiver))
+             (ruby-classes/ruby-array? receiver) (count @(:data receiver))
              (vector? receiver) (count receiver)
              (string? receiver) (count receiver)
              (keyword? receiver) (count (name receiver)) ; Size of symbol name
-             (ruby-hash? receiver) (count @(:data receiver))
+             (ruby-classes/ruby-hash? receiver) (count @(:data receiver))
              (map? receiver) (count receiver)
              :else ::method-not-found)
     "to_s" (cond
              (ruby-classes/ruby-range? receiver)
              (ruby-classes/invoke-ruby-method receiver :to_s)
-             (ruby-array? receiver)
+             (ruby-classes/ruby-array? receiver)
              ;; Ruby array to_s with proper formatting
              (let [array-data @(:data receiver)]
                (str "["
@@ -764,15 +759,15 @@
                              (str item)))
                          receiver))
                   "]")
-             (ruby-hash? receiver) (to-s receiver)
+             (ruby-classes/ruby-hash? receiver) (to-s receiver)
              (keyword? receiver) (name receiver) ; Convert :hello to "hello"
              :else (str receiver))
     "first" (cond
-              (ruby-array? receiver) (first @(:data receiver))
+              (ruby-classes/ruby-array? receiver) (first @(:data receiver))
               (vector? receiver) (first receiver)
               :else ::method-not-found)
     "last" (cond
-             (ruby-array? receiver) (last @(:data receiver))
+             (ruby-classes/ruby-array? receiver) (last @(:data receiver))
              (vector? receiver) (last receiver)
              :else ::method-not-found)
     "negative?" (if (number? receiver) (< receiver 0) ::method-not-found)
@@ -792,36 +787,36 @@
              ::method-not-found)
     "double" (if (number? receiver) (* receiver 2) ::method-not-found)
     "empty?" (cond
-               (ruby-array? receiver) (empty? @(:data receiver))
+               (ruby-classes/ruby-array? receiver) (empty? @(:data receiver))
                (vector? receiver) (empty? receiver)
                (string? receiver) (empty? receiver)
-               (ruby-hash? receiver) (empty? @(:data receiver))
+               (ruby-classes/ruby-hash? receiver) (empty? @(:data receiver))
                (map? receiver) (empty? receiver)
                :else ::method-not-found)
     "keys" (cond
-             (ruby-hash? receiver) (vec (keys @(:data receiver)))
+             (ruby-classes/ruby-hash? receiver) (vec (keys @(:data receiver)))
              (map? receiver) (vec (keys receiver))
              :else ::method-not-found)
     "values" (cond
-               (ruby-hash? receiver) (vec (vals @(:data receiver)))
+               (ruby-classes/ruby-hash? receiver) (vec (vals @(:data receiver)))
                (map? receiver) (vec (vals receiver))
                :else ::method-not-found)
     "key?" (cond
-             (ruby-hash? receiver) (contains? @(:data receiver) (first args))
+             (ruby-classes/ruby-hash? receiver) (contains? @(:data receiver) (first args))
              (map? receiver) (contains? receiver (first args))
              :else ::method-not-found)
     "include?" (cond
                  (ruby-classes/ruby-range? receiver)
                  (ruby-classes/invoke-ruby-method receiver :include? (first args))
-                 (ruby-hash? receiver) (contains? @(:data receiver) (first args))
+                 (ruby-classes/ruby-hash? receiver) (contains? @(:data receiver) (first args))
                  (map? receiver) (contains? receiver (first args))
                  :else ::method-not-found)
     "member?" (cond
-                (ruby-hash? receiver) (contains? @(:data receiver) (first args))
+                (ruby-classes/ruby-hash? receiver) (contains? @(:data receiver) (first args))
                 (map? receiver) (contains? receiver (first args))
                 :else ::method-not-found)
     "delete" (cond
-               (ruby-hash? receiver)
+               (ruby-classes/ruby-hash? receiver)
                (let [key-to-delete (first args)
                      old-value (get @(:data receiver) key-to-delete)]
                  (swap! (:data receiver) dissoc key-to-delete)
@@ -830,7 +825,7 @@
                (get receiver (first args)) ; Legacy immutable behavior
                :else ::method-not-found)
     "remove" (cond
-               (ruby-hash? receiver)
+               (ruby-classes/ruby-hash? receiver)
                (let [key-to-remove (first args)
                      old-value (get @(:data receiver) key-to-remove)]
                  (swap! (:data receiver) dissoc key-to-remove)
@@ -938,7 +933,7 @@
                    (println)
                    (let [arg (first args)]
                      (cond
-                       (ruby-array? arg)
+                       (ruby-classes/ruby-array? arg)
                        ;; Print ruby array elements on separate lines
                        (doseq [item @(:data arg)]
                          (cond
@@ -966,7 +961,7 @@
                            :else
                            (println item)))
 
-                       (ruby-hash? arg)
+                       (ruby-classes/ruby-hash? arg)
                        ;; Print hash in Ruby format
                        (println (to-s arg))
 
@@ -1010,11 +1005,11 @@
 
         "Rational" (let [num (or (first args) 0)
                            den (or (second args) 1)]
-                       (->RubyRational num den))
+                       (ruby-classes/create-rational num den))
 
         "Complex" (let [real (or (first args) 0)
                           imaginary (or (second args) 0)]
-                      (->RubyComplex real imaginary))
+                      (ruby-classes/create-complex real imaginary))
 
         "yield" (let [block-id (get @variables "__block_id")
                       block-ast (get @variables "__block_ast")]
@@ -1218,7 +1213,7 @@
             array-obj (interpret-expression ast array-id variables)
             index-val (interpret-expression ast index-id variables)]
         (cond
-          (ruby-array? array-obj)
+          (ruby-classes/ruby-array? array-obj)
           (swap! (:data array-obj) assoc index-val value)
 
           (vector? array-obj)
@@ -1243,7 +1238,7 @@
   (let [;; Convert value to vector for consistent handling
         values (cond
                  (vector? value) value
-                 (ruby-array? value) @(:data value)
+                 (ruby-classes/ruby-array? value) @(:data value)
                  :else [value])]
 
     ;; Count variables after splat to reserve end positions
@@ -1286,7 +1281,7 @@
                     end-index (max index (- (count values) vars-after-splat))
                     splat-values (vec (subvec values index end-index))]
                 (when var-name
-                  (swap! variables-atom assoc var-name (->RubyArray (atom splat-values))))
+                  (swap! variables-atom assoc var-name (apply ruby-classes/create-array splat-values)))
                 ;; Continue with variables after splat, adjusting index
                 (recur (rest remaining-vars) end-index))
 
@@ -1308,9 +1303,9 @@
         iterable-value (interpret-expression ast iterable variables)
         result (atom nil)
         should-break (atom false)]
-    (when (or (vector? iterable-value) (ruby-array? iterable-value) (instance? sri.ruby_range.RubyRange iterable-value))
+    (when (or (vector? iterable-value) (ruby-classes/ruby-array? iterable-value) (instance? sri.ruby_range.RubyRange iterable-value))
       (let [items-to-iterate (cond
-                               (ruby-array? iterable-value) @(:data iterable-value)
+                               (ruby-classes/ruby-array? iterable-value) @(:data iterable-value)
                                (instance? sri.ruby_range.RubyRange iterable-value)
                                ;; Convert range to array using its to_a method
                                (let [to-a-method (method-lookup iterable-value :to_a)]
@@ -1689,7 +1684,7 @@
   [ast entity-id variables]
   (let [statement-ids (parser/get-component ast entity-id :statements)]
     (if statement-ids
-      (let [results (map #(interpret-expression ast % variables) statement-ids)]
+      (let [results (mapv #(interpret-expression ast % variables) statement-ids)]
         (last results)) ; Return the last expression result
       nil)))
 
@@ -1860,7 +1855,7 @@
      (if (= :program root-type)
        ;; Handle program with multiple statements
        (let [statement-ids (parser/get-children ast root-entity-id)]
-         (let [results (map #(interpret-expression-with-opts ast % variables opts) statement-ids)]
+         (let [results (mapv #(interpret-expression-with-opts ast % variables opts) statement-ids)]
            (last results))) ; Return the last expression result
        ;; Handle single expression
        (interpret-expression-with-opts ast root-entity-id variables opts)))))
