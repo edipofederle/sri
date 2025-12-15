@@ -131,35 +131,3 @@
 | For loops | `for i in 1..5; end` | ✅ |
 | While loops | `while condition; end` | ✅ |
 | Until loops | `until condition; end` | ✅ |
-
-## Notable Features Verified in Examples
-
-SRI successfully implements a substantial subset of Ruby's core features, as demonstrated by the working examples:
-
-### Data Types and Literals
-- **Numbers**: Full integer and float support with arithmetic operations
-- **Strings**: Complete string handling with interpolation and methods
-- **Arrays**: Dynamic arrays with indexing, assignment, and iteration
-- **Hashes**: Key-value storage with string and numeric keys
-- **Symbols**: Immutable symbol literals with standard methods
-- **Ranges**: Both inclusive (`..`) and exclusive (`...`) ranges
-
-### Object System
-- **Classes**: Full class definition, instantiation, and method support
-- **Attributes**: `attr_accessor`, `attr_reader`, and `attr_writer` work correctly
-- **Instance Variables**: Proper `@variable` scoping and access
-- **Methods**: Parameter handling, return values, and method chaining
-
-### Advanced Features
-- **String Interpolation**: Expression evaluation within `#{}` syntax
-- **Block Iteration**: Both `do..end` and `{..}` block syntax
-- **Control Flow**: If-else, case-when, and loop constructs
-- **Method Calls**: Chained method calls and proper argument handling
-
-### Code Quality
-All examples include expected output verification, demonstrating that SRI produces correct Ruby-compatible results. The interpreter handles edge cases well, such as array expansion, negative indexing, empty collections, and mixed data types.
-
-### Implementation Notes
-- **Alternative Number Bases**: Code exists for hex/binary/octal but lacks working examples
-- **Advanced Literals**: Rational and complex number support is implemented but untested
-- **Error Handling**: Proper exception handling for syntax and runtime errors
