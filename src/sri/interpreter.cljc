@@ -992,8 +992,7 @@
               (prn (first args))
               (first args))
 
-        "eval" (do
-                 (if (empty? args)
+        "eval" (if (empty? args)
                    (throw (ex-info "eval requires a string argument" {:args args}))
                    (let [code-str (first args)]
                      (if (string? code-str)
@@ -1007,17 +1006,15 @@
                          (catch Exception e
                            (throw (ex-info (str "eval error: " (.getMessage e))
                                           {:code code-str :original-error e}))))
-                       (throw (ex-info "eval argument must be a string" {:arg code-str :type (type code-str)}))))))
+                       (throw (ex-info "eval argument must be a string" {:arg code-str :type (type code-str)})))))
 
-        "Rational" (do
-                     (let [num (or (first args) 0)
+        "Rational" (let [num (or (first args) 0)
                            den (or (second args) 1)]
-                       (->RubyRational num den)))
+                       (->RubyRational num den))
 
-        "Complex" (do
-                    (let [real (or (first args) 0)
+        "Complex" (let [real (or (first args) 0)
                           imaginary (or (second args) 0)]
-                      (->RubyComplex real imaginary)))
+                      (->RubyComplex real imaginary))
 
         "yield" (let [block-id (get @variables "__block_id")
                       block-ast (get @variables "__block_ast")]
@@ -1025,8 +1022,8 @@
                     ;; Execute the stored block with yield arguments
                     (execute-block block-ast block-id variables args)
                     ;; No block provided - throw LocalJumpError (Ruby behavior)
-                    (throw (ex-info "no block given (yield)" 
-                                   {:type :local-jump-error 
+                    (throw (ex-info "no block given (yield)"
+                                   {:type :local-jump-error
                                     :method "yield"}))))
 
         ;; Check if it's a user-defined method
