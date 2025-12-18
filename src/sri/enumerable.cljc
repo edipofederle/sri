@@ -1,7 +1,7 @@
 (ns sri.enumerable
   "Enumerable module for Sri - provides iteration methods for collections"
   (:require [sri.parser :as parser]
-            [sri.ruby-classes-new :refer [ruby-array?]]))
+            [sri.ruby-array :refer [ruby-array?]]))
 
 ;; Forward declaration for execute-block (defined in interpreter)
 (declare execute-block)
@@ -53,7 +53,7 @@
     (doseq [item obj]
       (element-fn item))
 
-    (ruby-array? obj) ; Ruby arrays
+    (ruby-array? obj)
     (doseq [item @(:data obj)]
       (element-fn item))
 

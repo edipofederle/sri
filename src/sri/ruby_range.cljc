@@ -21,31 +21,30 @@
                  :kind_of? :is_a? :class :nil? :puts :p :print} method-name))
   (get-ruby-method [this method-name]
     (method-lookup this method-name))
-  
+
   RubyInspectable
-  (to-s [this]
-    (let [{:keys [start end inclusive?]} this]
-      (if (and (string? start) (string? end) 
-               (= 1 (count start)) (= 1 (count end)))
-        ;; Character range: "a".."z"
-        (str "\"" start "\"" (if inclusive? ".." "...") "\"" end "\"")
-        ;; Numeric range: 1..5
-        (str start (if inclusive? ".." "...") end))))
+  (to-s [{:keys [start end inclusive?]}]
+    (if (and (string? start) (string? end)
+             (= 1 (count start)) (= 1 (count end)))
+      ;; Character range: "a".."z"
+      (str "\"" start "\"" (if inclusive? ".." "...") "\"" end "\"")
+      ;; Numeric range: 1..5
+      (str start (if inclusive? ".." "...") end)))
   (inspect [this] (to-s this))
-  
+
   RubyComparable
-  (ruby-eq [this other]
+  (ruby-eq [{:keys [start end inclusive?]} other]
     (and (instance? RubyRange other)
-         (= (:start this) (:start other))
-         (= (:end this) (:end other))
-         (= (:inclusive? this) (:inclusive? other))))
-  (ruby-compare [this other]
+         (= start (:start other))
+         (= end (:end other))
+         (= inclusive? (:inclusive? other))))
+  (ruby-compare [{:keys [start end inclusive?]} other]
     (when (instance? RubyRange other)
-      (let [start-cmp (compare (:start this) (:start other))]
+      (let [start-cmp (compare start (:start other))]
         (if (= start-cmp 0)
-          (let [end-cmp (compare (:end this) (:end other))]
+          (let [end-cmp (compare end (:end other))]
             (if (= end-cmp 0)
-              (compare (:inclusive? this) (:inclusive? other))
+              (compare inclusive? (:inclusive? other))
               end-cmp))
           start-cmp)))))
 
@@ -101,48 +100,45 @@
 
   ;; Range-specific methods
   (register-method "Range" :size
-    (fn [ruby-range]
-      (let [{:keys [start end inclusive?]} ruby-range]
-        (if (char-range? ruby-range)
-          ;; Character range size
-          (let [start-ascii (char-to-int start)
-                end-ascii (char-to-int end)
-                limit (if inclusive? (inc end-ascii) end-ascii)]
-            (max 0 (- limit start-ascii)))
-          ;; Numeric range size
-          (let [limit (if inclusive? (inc end) end)]
-            (max 0 (- limit start)))))))
+    (fn [{:keys [start end inclusive?] :as ruby-range}]
+      (if (char-range? ruby-range)
+        ;; Character range size
+        (let [start-ascii (char-to-int start)
+              end-ascii (char-to-int end)
+              limit (if inclusive? (inc end-ascii) end-ascii)]
+          (max 0 (- limit start-ascii)))
+        ;; Numeric range size
+        (let [limit (if inclusive? (inc end) end)]
+          (max 0 (- limit start)))))))
 
   (register-method "Range" :count
-    (fn [ruby-range]
-      (let [{:keys [start end inclusive?]} ruby-range]
-        (if (char-range? ruby-range)
-          ;; Character range count
-          (let [start-ascii (char-to-int start)
-                end-ascii (char-to-int end)
-                limit (if inclusive? (inc end-ascii) end-ascii)]
-            (max 0 (- limit start-ascii)))
-          ;; Numeric range count
-          (let [limit (if inclusive? (inc end) end)]
-            (max 0 (- limit start)))))))
+    (fn [{:keys [start end inclusive?] :as ruby-range}]
+      (if (char-range? ruby-range)
+        ;; Character range count
+        (let [start-ascii (char-to-int start)
+              end-ascii (char-to-int end)
+              limit (if inclusive? (inc end-ascii) end-ascii)]
+          (max 0 (- limit start-ascii)))
+        ;; Numeric range count
+        (let [limit (if inclusive? (inc end) end)]
+          (max 0 (- limit start))))))
 
   (register-method "Range" :include?
-    (fn [ruby-range value]
-      (let [{:keys [start end inclusive?]} ruby-range]
-        (if (char-range? ruby-range)
-          ;; Character range comparison
-          (if (and (string? value) (= 1 (count value)))
-            (let [start-ascii (char-to-int start)
-                  end-ascii (char-to-int end)
-                  value-ascii (char-to-int value)]
-              (if inclusive?
-                (and (>= value-ascii start-ascii) (<= value-ascii end-ascii))
-                (and (>= value-ascii start-ascii) (< value-ascii end-ascii))))
-            false)
-          ;; Numeric range comparison
-          (if inclusive?
-            (and (>= value start) (<= value end))
-            (and (>= value start) (< value end)))))))
+    (fn [{:keys [start end inclusive?] :as ruby-range} value]
+      (if (char-range? ruby-range)
+        ;; Character range comparison
+        (if (and (string? value) (= 1 (count value)))
+          (let [start-ascii (char-to-int start)
+                end-ascii (char-to-int end)
+                value-ascii (char-to-int value)]
+            (if inclusive?
+              (and (>= value-ascii start-ascii) (<= value-ascii end-ascii))
+              (and (>= value-ascii start-ascii) (< value-ascii end-ascii))))
+          false)
+        ;; Numeric range comparison
+        (if inclusive?
+          (and (>= value start) (<= value end))
+          (and (>= value start) (< value end))))))
 
   (register-method "Range" :member?
     (fn [ruby-range value]
@@ -151,17 +147,16 @@
         (include-fn ruby-range value))))
 
   (register-method "Range" :to_a
-    (fn [ruby-range]
-      (let [{:keys [start end inclusive?]} ruby-range]
-        (if (char-range? ruby-range)
-          ;; Character range
-          (let [start-ascii (char-to-int start)
-                end-ascii (char-to-int end)
-                limit (if inclusive? (inc end-ascii) end-ascii)]
-            (vec (map int-to-char (clojure.core/range start-ascii limit))))
-          ;; Numeric range
-          (let [limit (if inclusive? (inc end) end)]
-            (vec (clojure.core/range start limit)))))))
+    (fn [{:keys [start end inclusive?] :as ruby-range}]
+      (if (char-range? ruby-range)
+        ;; Character range
+        (let [start-ascii (char-to-int start)
+              end-ascii (char-to-int end)
+              limit (if inclusive? (inc end-ascii) end-ascii)]
+          (vec (map int-to-char (clojure.core/range start-ascii limit))))
+        ;; Numeric range
+        (let [limit (if inclusive? (inc end) end)]
+          (vec (clojure.core/range start limit))))))
 
   (register-method "Range" :first
     (fn [ruby-range & args]
@@ -175,15 +170,14 @@
           (vec (take n array))))))
 
   (register-method "Range" :last
-    (fn [ruby-range & args]
+    (fn [{:keys [start end inclusive?] :as ruby-range} & args]
       (if (empty? args)
         ;; Return the last element
-        (let [{:keys [start end inclusive?]} ruby-range]
-          (if inclusive?
-            end
-            (if (char-range? ruby-range)
-              (int-to-char (dec (char-to-int end)))
-              (dec end))))
+        (if inclusive?
+          end
+          (if (char-range? ruby-range)
+            (int-to-char (dec (char-to-int end)))
+            (dec end)))
         ;; Return last n elements as array
         (let [n (first args)
               to-a-fn (method-lookup ruby-range :to_a)
@@ -195,13 +189,12 @@
       (:start ruby-range)))
 
   (register-method "Range" :max
-    (fn [ruby-range]
-      (let [{:keys [end inclusive?]} ruby-range]
-        (if inclusive?
-          end
-          (if (char-range? ruby-range)
-            (int-to-char (dec (char-to-int end)))
-            (dec end))))))
+    (fn [{:keys [end inclusive?] :as ruby-range}]
+      (if inclusive?
+        end
+        (if (char-range? ruby-range)
+          (int-to-char (dec (char-to-int end)))
+          (dec end)))))
 
   ;; Comparison operators
   (register-method "Range" :<
@@ -225,7 +218,7 @@
         (>= (ruby-compare ruby-range1 ruby-range2) 0))))
 
   ;; Inherit Kernel methods
-  (register-method "Range" :puts 
+  (register-method "Range" :puts
     (fn [this & args]
       (if (empty? args)
         (println)
@@ -233,7 +226,7 @@
           (println (if (satisfies? RubyInspectable arg) (to-s arg) (str arg)))))
       nil))
 
-  (register-method "Range" :p 
+  (register-method "Range" :p
     (fn [this & args]
       (if (empty? args)
         nil
@@ -241,11 +234,11 @@
           (println (str/join " " results))
           (if (= 1 (count results)) (first args) (vec args))))))
 
-  (register-method "Range" :print 
+  (register-method "Range" :print
     (fn [this & args]
       (doseq [arg args]
         (print (if (satisfies? RubyInspectable arg) (to-s arg) (str arg))))
-      nil)))
+      nil))
 
 ;; Register methods on namespace load
 (register-range-methods!)
@@ -256,5 +249,7 @@
 
 (defn create-range
   "Create a new Ruby range."
-  [start end inclusive?]
-  (->RubyRange start end inclusive?))
+  ([start end]
+   (->RubyRange start end false))
+  ([start end inclusive?]
+   (->RubyRange start end inclusive?)))

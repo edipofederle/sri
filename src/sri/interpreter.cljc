@@ -62,9 +62,8 @@
 (defn bind-method-parameters
   "Create a new variable scope with method parameters bound to arguments."
   [variables params args]
-  (let [local-vars (atom @variables)
-        param-arg-pairs (map vector params args)]
-    (doseq [[param arg] param-arg-pairs]
+  (let [local-vars (atom @variables)]
+    (doseq [[param arg] (map vector params args)]
       (swap! local-vars assoc param arg))
     local-vars))
 
@@ -74,9 +73,9 @@
   (try
     (interpret-expression ast entity-id variables)
     (catch clojure.lang.ExceptionInfo e
-      (let [ex-data (ex-data e)]
-        (if (= (:type ex-data) :return)
-          (:value ex-data)  ; Return the explicit return value
+      (let [{:keys [type value]} (ex-data e)]
+        (if (= type :return)
+          value  ; Return the explicit return value
           (throw e))))))
 
 (defn ruby-class-name
@@ -592,9 +591,9 @@
       (try
         (interpret-expression method-ast method-body method-vars)
         (catch clojure.lang.ExceptionInfo e
-          (let [ex-data (ex-data e)]
-            (if (= (:type ex-data) :return)
-              (:value ex-data)
+          (let [{:keys [type value]} (ex-data e)]
+            (if (= type :return)
+              value
               (throw e)))))
       nil)))
 
@@ -656,9 +655,9 @@
                         (try
                           (interpret-expression method-ast method-body method-vars)
                           (catch clojure.lang.ExceptionInfo e
-                            (let [ex-data (ex-data e)]
-                              (if (= (:type ex-data) :return)
-                                (:value ex-data)
+                            (let [{:keys [type value]} (ex-data e)]
+                              (if (= type :return)
+                                value
                                 (throw e)))))
 
                         ;; No method body
@@ -1194,8 +1193,8 @@
       (try
         (reset! result (interpret-expression ast body variables))
         (catch clojure.lang.ExceptionInfo e
-          (let [ex-data (ex-data e)]
-            (case (:type ex-data)
+          (let [{:keys [type]} (ex-data e)]
+            (case type
               :break (reset! running? false)
               :continue nil  ; Just continue to next iteration
               (throw e))))))
@@ -1324,8 +1323,8 @@
                   (interpret-assignment-to-expression ast target-expression item variables)))
               (reset! result (interpret-expression ast body variables))
               (catch clojure.lang.ExceptionInfo e
-                (let [ex-data (ex-data e)]
-                  (case (:type ex-data)
+                (let [{:keys [type]} (ex-data e)]
+                  (case type
                     :break (reset! should-break true)  ; Exit the loop entirely
                     :continue nil   ; Continue to next iteration
                     (throw e)))))
@@ -1343,8 +1342,8 @@
       (try
         (reset! result (interpret-expression ast body variables))
         (catch clojure.lang.ExceptionInfo e
-          (let [ex-data (ex-data e)]
-            (case (:type ex-data)
+          (let [{:keys [type]} (ex-data e)]
+            (case type
               :break (reset! running? false)
               :continue nil  ; Just continue to next iteration
               (throw e))))))
@@ -1360,11 +1359,11 @@
       (try
         (reset! result (interpret-expression ast body variables))
         (catch clojure.lang.ExceptionInfo e
-          (let [ex-data (ex-data e)]
-            (case (:type ex-data)
+          (let [{:keys [type value]} (ex-data e)]
+            (case type
               :break (do
                        (reset! running? false)
-                       (reset! result (:value ex-data)))
+                       (reset! result value))
               :continue nil  ; Just continue to next iteration
               (throw e))))))
     @result))
