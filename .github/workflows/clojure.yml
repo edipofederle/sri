@@ -18,6 +18,10 @@ jobs:
       with:
         java-version: '11'
         distribution: 'temurin'
+    - name: Install Clojure tools
+      uses: DeLaGuardo/setup-clojure@12.5
+      with:
+        lein: 2.10.0
     - name: Install dependencies
       run: lein deps
     - name: Run tests
