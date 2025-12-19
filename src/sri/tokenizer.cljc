@@ -16,6 +16,7 @@
    "!" :not
    "<" :less-than
    "<=" :less-equal
+   "<<" :left-shift
    ">" :greater-than
    ">=" :greater-equal
    "=" :assign
@@ -552,9 +553,14 @@
       (= ch \<)
       (let [[_ state1] (next-char state)
             next-ch (peek-char state1)]
-        (if (= next-ch \=)
+        (cond
+          (= next-ch \=)
           (let [[_ state2] (next-char state1)]
             [(create-token :operator "<=" start-line start-column) state2])
+          (= next-ch \<)
+          (let [[_ state2] (next-char state1)]
+            [(create-token :operator "<<" start-line start-column) state2])
+          :else
           [(create-token :operator "<" start-line start-column) state1]))
 
       (= ch \>)

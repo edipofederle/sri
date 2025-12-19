@@ -499,6 +499,18 @@
                  :else (>= left-val right-val))
           ".." (ruby-classes/create-range left-val right-val true)
           "..." (ruby-classes/create-range left-val right-val false)
+          "<<" (cond
+                 ;; Ruby array append
+                 (ruby-classes/ruby-array? left-val)
+                 (do
+                   (swap! (:data left-val) conj right-val)
+                   left-val) ; Return the modified array (Ruby << returns the array)
+                 ;; Try Ruby object method call
+                 (satisfies? ruby-classes/RubyObject left-val)
+                 (ruby-classes/invoke-ruby-method left-val "<<" right-val)
+                 :else
+                 (throw (ex-info "Left-shift operator << only supported for arrays"
+                                {:left-type (type left-val) :right-val right-val})))
           (throw (ex-info (str "Unknown binary operator: " operator)
                           {:operator operator})))))))
 
