@@ -34,8 +34,13 @@
   ([source opts]
    (try
      (let [ast (p/parse (t/tokenize source))
-           root-entity (p/find-root-entity ast)]
-       (i/evaluate-directly ast root-entity opts))
+           root-entity (p/find-root-entity ast)
+           result (i/evaluate-directly ast root-entity opts)]
+       ;; Convert RubyString objects to Java strings for user-friendly results
+       (cond
+         (satisfies? sri.ruby-protocols/RubyInspectable result)
+         (sri.ruby-protocols/to-s result)
+         :else result))
      (catch clojure.lang.ExceptionInfo e
        (throw (ex-info (str "Ruby evaluation error: " (.getMessage e))
                        {:source source

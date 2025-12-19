@@ -454,7 +454,15 @@
                 (ruby-classes/invoke-ruby-method left-val :+ right-val)
                 ;; String concatenation for primitive strings
                 (or (string? left-val) (string? right-val))
-                (str left-val right-val)
+                (let [left-str (cond
+                                 (string? left-val) left-val
+                                 (satisfies? ruby-classes/RubyObject left-val) (to-s left-val)
+                                 :else (str left-val))
+                      right-str (cond
+                                  (string? right-val) right-val
+                                  (satisfies? ruby-classes/RubyObject right-val) (to-s right-val)
+                                  :else (str right-val))]
+                  (str left-str right-str))
                 ;; Numeric addition with arbitrary precision
                 :else (+' left-val right-val))
           "-" (-' left-val right-val)
