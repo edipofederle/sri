@@ -4,7 +4,8 @@
             [sri.ruby-protocols :refer [RubyObject RubyInspectable RubyComparable
                                         ruby-class ruby-ancestors respond-to?
                                         to-s inspect ruby-eq ruby-compare]]
-            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]))
+            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]
+            [sri.ruby-kernel :as kernel]))
 
 ;; =============================================================================
 ;; Mutable Array Wrapper
@@ -28,7 +29,8 @@
       (str "[" (str/join " " (map #(cond
                                      (nil? %) "nil"
                                      (keyword? %) (name %) ; symbols without :
-                                     (string? %) (str "\"" % "\"") ; strings with quotes
+                                     (string? %) (str "\"" % "\"") ; Java strings with quotes
+                                     (and (map? %) (contains? % :value)) (str "\"" (:value %) "\"") ; RubyStrings with quotes
                                      (satisfies? RubyInspectable %) (to-s %)
                                      :else (str %)) elements)) "]")))
   (inspect [this] (to-s this))
@@ -183,28 +185,8 @@
         (throw (ex-info "Array concatenation requires array argument" 
                        {:array1 ruby-array1 :array2 ruby-array2})))))
 
-  ;; Inherit Kernel methods
-  (register-method "Array" :puts 
-    (fn [this & args]
-      (if (empty? args)
-        (println)
-        (doseq [arg args]
-          (println (if (satisfies? RubyInspectable arg) (to-s arg) (str arg)))))
-      nil))
-
-  (register-method "Array" :p 
-    (fn [this & args]
-      (if (empty? args)
-        nil
-        (let [results (mapv #(if (satisfies? RubyInspectable %) (inspect %) (pr-str %)) args)]
-          (println (str/join " " results))
-          (if (= 1 (count results)) (first args) (vec args))))))
-
-  (register-method "Array" :print 
-    (fn [this & args]
-      (doseq [arg args]
-        (print (if (satisfies? RubyInspectable arg) (to-s arg) (str arg))))
-      nil)))
+  ;; Include Kernel methods (mixed into Object, inherited by Array)
+  (kernel/register-kernel-methods-for-class! "Array"))
 
 ;; Register methods on namespace load
 (register-array-methods!)

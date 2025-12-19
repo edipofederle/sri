@@ -65,7 +65,7 @@
   ;; Conversion methods
   (register-method "Numeric" :to_i #(int %))
   (register-method "Numeric" :to_f #(float %))
-  (register-method "Numeric" :to_s #(str %))
+  (register-method "Numeric" :to_s #(sri.ruby-string/->RubyString (str %)))
   (register-method "Numeric" :inspect #(str %)))
 
 (defn register-integer-methods!

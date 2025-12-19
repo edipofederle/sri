@@ -4,7 +4,8 @@
             [sri.ruby-protocols :refer [RubyObject RubyInspectable RubyComparable
                                         ruby-class ruby-ancestors respond-to?
                                         to-s inspect ruby-eq ruby-compare]]
-            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]))
+            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]
+            [sri.ruby-kernel :as kernel]))
 
 ;; =============================================================================
 ;; Range - Ruby Range class
@@ -24,12 +25,18 @@
 
   RubyInspectable
   (to-s [{:keys [start end inclusive?]}]
-    (if (and (string? start) (string? end)
-             (= 1 (count start)) (= 1 (count end)))
-      ;; Character range: "a".."z"
-      (str "\"" start "\"" (if inclusive? ".." "...") "\"" end "\"")
-      ;; Numeric range: 1..5
-      (str start (if inclusive? ".." "...") end)))
+    (let [start-val (cond
+                      (and (map? start) (contains? start :value)) (:value start)
+                      :else start)
+          end-val (cond
+                    (and (map? end) (contains? end :value)) (:value end)
+                    :else end)]
+      (if (and (string? start-val) (string? end-val)
+               (= 1 (count start-val)) (= 1 (count end-val)))
+        ;; Character range: "a".."z"
+        (str "\"" start-val "\"" (if inclusive? ".." "...") "\"" end-val "\"")
+        ;; Numeric range: 1..5
+        (str start-val (if inclusive? ".." "...") end-val))))
   (inspect [this] (to-s this))
 
   RubyComparable
@@ -61,15 +68,22 @@
   "Check if a range is a character range (string endpoints)."
   [range]
   (and (ruby-range? range)
-       (string? (:start range))
-       (string? (:end range))
-       (= 1 (count (:start range)))
-       (= 1 (count (:end range)))))
+       (let [start (:start range)
+             end (:end range)
+             start-val (cond
+                         (and (map? start) (contains? start :value)) (:value start)
+                         :else start)
+             end-val (cond
+                       (and (map? end) (contains? end :value)) (:value end)
+                       :else end)]
+         (and (string? start-val) (string? end-val)
+              (= 1 (count start-val)) (= 1 (count end-val))))))
 
 (defn char-to-int
   "Convert a single character string to its ASCII value."
   [char-str]
-  (int (first char-str)))
+  (let [str-val (if (string? char-str) char-str (:value char-str))]
+    (int (first str-val))))
 
 (defn int-to-char
   "Convert an ASCII value to a single character string."
@@ -127,7 +141,8 @@
     (fn [{:keys [start end inclusive?] :as ruby-range} value]
       (if (char-range? ruby-range)
         ;; Character range comparison
-        (if (and (string? value) (= 1 (count value)))
+        (if (and (or (string? value) (and (map? value) (contains? value :value)))
+                 (= 1 (count (if (string? value) value (:value value)))))
           (let [start-ascii (char-to-int start)
                 end-ascii (char-to-int end)
                 value-ascii (char-to-int value)]
@@ -218,27 +233,7 @@
         (>= (ruby-compare ruby-range1 ruby-range2) 0))))
 
   ;; Inherit Kernel methods
-  (register-method "Range" :puts
-    (fn [this & args]
-      (if (empty? args)
-        (println)
-        (doseq [arg args]
-          (println (if (satisfies? RubyInspectable arg) (to-s arg) (str arg)))))
-      nil))
-
-  (register-method "Range" :p
-    (fn [this & args]
-      (if (empty? args)
-        nil
-        (let [results (mapv #(if (satisfies? RubyInspectable %) (inspect %) (pr-str %)) args)]
-          (println (str/join " " results))
-          (if (= 1 (count results)) (first args) (vec args))))))
-
-  (register-method "Range" :print
-    (fn [this & args]
-      (doseq [arg args]
-        (print (if (satisfies? RubyInspectable arg) (to-s arg) (str arg))))
-      nil))
+  (kernel/register-kernel-methods-for-class! "Range")
 
 ;; Register methods on namespace load
 (register-range-methods!)

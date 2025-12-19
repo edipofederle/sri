@@ -4,7 +4,8 @@
             [sri.ruby-protocols :refer [RubyObject RubyInspectable RubyComparable
                                         ruby-class ruby-ancestors respond-to?
                                         to-s inspect ruby-eq ruby-compare]]
-            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]))
+            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]
+            [sri.ruby-kernel :as kernel]))
 
 ;; =============================================================================
 ;; String - Ruby String class
@@ -88,10 +89,12 @@
   (register-method "String" :+
     (fn [str1 str2]
       (cond
+        ;; Ruby String + Ruby String
         (instance? RubyString str2) (->RubyString (str (:value str1) (:value str2)))
+        ;; Ruby String + Java String  
         (string? str2) (->RubyString (str (:value str1) str2))
-        :else (throw (ex-info "String concatenation requires string argument" 
-                             {:str1 str1 :str2 str2})))))
+        ;; Ruby String + Number or other types (convert to string)
+        :else (->RubyString (str (:value str1) (str str2))))))
 
   ;; String comparison operators
   (register-method "String" :<
@@ -233,28 +236,8 @@
             delim-val (if (instance? RubyString delimiter) (:value delimiter) delimiter)]
         (mapv ->RubyString (str/split str-val (re-pattern delim-val))))))
 
-  ;; Inherit Kernel methods
-  (register-method "String" :puts 
-    (fn [this & args]
-      (if (empty? args)
-        (println)
-        (doseq [arg args]
-          (println (if (satisfies? RubyInspectable arg) (to-s arg) (str arg)))))
-      nil))
-
-  (register-method "String" :p 
-    (fn [this & args]
-      (if (empty? args)
-        nil
-        (let [results (mapv #(if (satisfies? RubyInspectable %) (inspect %) (pr-str %)) args)]
-          (println (str/join " " results))
-          (if (= 1 (count results)) (first args) (vec args))))))
-
-  (register-method "String" :print 
-    (fn [this & args]
-      (doseq [arg args]
-        (print (if (satisfies? RubyInspectable arg) (to-s arg) (str arg))))
-      nil)))
+  ;; Include Kernel methods (mixed into Object, inherited by String)
+  (kernel/register-kernel-methods-for-class! "String"))
 
 ;; Register methods on namespace load
 (register-string-methods!)
@@ -266,4 +249,8 @@
 (defn create-string
   "Create a new RubyString instance."
   [value]
-  (->RubyString (str value)))
+  (cond
+    ;; If already a RubyString, extract its value
+    (instance? RubyString value) (->RubyString (:value value))
+    ;; If it's a string or other value, convert to string
+    :else (->RubyString (str value))))

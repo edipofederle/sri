@@ -29,15 +29,22 @@
   "Check if a range is a character range (string endpoints)."
   [range]
   (and (ruby-range? range)
-       (string? (:start range))
-       (string? (:end range))
-       (= 1 (count (:start range)))
-       (= 1 (count (:end range)))))
+       (let [start (:start range)
+             end (:end range)
+             start-val (cond
+                         (and (map? start) (contains? start :value)) (:value start)
+                         :else start)
+             end-val (cond
+                       (and (map? end) (contains? end :value)) (:value end)
+                       :else end)]
+         (and (string? start-val) (string? end-val)
+              (= 1 (count start-val)) (= 1 (count end-val))))))
 
 (defn char-to-int
   "Convert a single character string to its ASCII value."
   [char-str]
-  (int (first char-str)))
+  (let [str-val (if (string? char-str) char-str (:value char-str))]
+    (int (first str-val))))
 
 (defn int-to-char
   "Convert an ASCII value to a single character string."

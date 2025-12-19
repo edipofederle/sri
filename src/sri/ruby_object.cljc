@@ -4,7 +4,8 @@
             [sri.ruby-protocols :refer [RubyObject RubyInspectable RubyComparable
                                         ruby-class ruby-ancestors respond-to?
                                         to-s inspect ruby-eq ruby-compare]]
-            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]))
+            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]
+            [sri.ruby-kernel :as kernel]))
 
 (defrecord RubyObjectClass [value]
   RubyObject
@@ -59,28 +60,8 @@
   (register-method "Object" :kind_of? #(contains? (set (ruby-ancestors %1)) %2))
   (register-method "Object" :is_a? #(contains? (set (ruby-ancestors %1)) %2))
 
-  ;; Kernel methods (mixed into Object)
-  (register-method "Object" :puts
-    (fn [_ & args]
-      (if (empty? args)
-        (println)
-        (doseq [arg args]
-          (println (if (satisfies? RubyInspectable arg) (to-s arg) (str arg)))))
-      nil))
-
-  (register-method "Object" :p
-    (fn [_ & args]
-      (if (empty? args)
-        nil
-        (let [results (mapv #(if (satisfies? RubyInspectable %) (inspect %) (pr-str %)) args)]
-          (println (str/join " " results))
-          (if (= 1 (count results)) (first args) (vec args))))))
-
-  (register-method "Object" :print
-    (fn [_ & args]
-      (doseq [arg args]
-        (print (if (satisfies? RubyInspectable arg) (to-s arg) (str arg))))
-      nil))
+  ;; Include Kernel methods (mixed into Object)
+  (kernel/register-kernel-methods!)
 
   ;; Spec assertion method
   (register-method "Object" :should

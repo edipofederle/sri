@@ -2,6 +2,11 @@
   (:require [clojure.test :refer [deftest is testing]]
             [sri.core :as sri]))
 
+(defn ruby-string-value [obj]
+  (if (and (map? obj) (contains? obj :value))
+    (:value obj)
+    obj))
+
 (deftest test-basic-arithmetic
   (testing "Basic arithmetic expressions"
     (is (= 3 (sri/eval-string "1 + 2")))
@@ -11,19 +16,19 @@
 
 (deftest test-string-operations
   (testing "String operations and interpolation"
-    (is (= "Hello World" (sri/eval-string "'Hello ' + 'World'")))
-    (is (= "Hello Ruby" (sri/eval-string "\"Hello #{'Ruby'}\"")))
+    (is (= "Hello World" (ruby-string-value (sri/eval-string "'Hello ' + 'World'"))))
+    (is (= "Hello Ruby" (ruby-string-value (sri/eval-string "\"Hello #{'Ruby'}\""))))
     (is (= 11 (sri/eval-string "'Hello World'.length")))))
 
 (deftest test-variable-assignment
   (testing "Variable assignment and usage"
     (is (= 42 (sri/eval-string "x = 42; x")))
     (is (= 84 (sri/eval-string "x = 42; x * 2")))
-    (is (= "Alice30" (sri/eval-string "name = 'Alice'; age = 30; name + age.to_s")))))
+    (is (= "Alice30" (ruby-string-value (sri/eval-string "name = 'Alice'; age = 30; name + age.to_s"))))))
 
 (deftest test-method-definitions
   (testing "Method definitions and calls"
-    (is (= "Hello Bob" (sri/eval-string "def greet(name); 'Hello ' + name; end; greet('Bob')")))
+    (is (= "Hello Bob" (ruby-string-value (sri/eval-string "def greet(name); 'Hello ' + name; end; greet('Bob')"))))
     (is (= 25 (sri/eval-string "def square(x); x * x; end; square(5)")))
     (is (= 6 (sri/eval-string "def add(a, b); a + b; end; add(2, 4)")))))
 
@@ -47,8 +52,8 @@
 
 (deftest test-conditionals
   (testing "If-else conditionals in methods"
-    (is (= "positive" (sri/eval-string "def test_cond(n); if n > 0; 'positive'; else 'negative'; end; end; test_cond(5)")))
-    (is (= "negative" (sri/eval-string "def test_cond(n); if n > 0; 'positive'; else 'negative'; end; end; test_cond(-1)")))))
+    (is (= "positive" (ruby-string-value (sri/eval-string "def test_cond(n); if n > 0; 'positive'; else 'negative'; end; end; test_cond(5)"))))
+    (is (= "negative" (ruby-string-value (sri/eval-string "def test_cond(n); if n > 0; 'positive'; else 'negative'; end; end; test_cond(-1)"))))))
 
 (deftest test-loops
   (testing "Loop constructs"
@@ -85,11 +90,11 @@
       factorial(5)
     ")))
 
-    (is (= "Alice is 30 years old" (sri/eval-string "
+    (is (= "Alice is 30 years old" (ruby-string-value (sri/eval-string "
       name = 'Alice'
       age = 30
       name + ' is ' + age.to_s + ' years old'
-    ")))))
+    "))))))
 
 (deftest test-eval-string-with-options
   (testing "eval-string with empty options map"

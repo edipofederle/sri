@@ -4,7 +4,9 @@
             [sri.ruby-protocols :refer [RubyObject RubyInspectable RubyComparable
                                         ruby-class ruby-ancestors respond-to?
                                         to-s inspect ruby-eq ruby-compare]]
-            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]))
+            [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]
+            [sri.ruby-kernel :as kernel]
+            [sri.ruby-array :as ruby-array]))
 
 ;; =============================================================================
 ;; Mutable Hash Wrapper
@@ -30,13 +32,16 @@
         (let [pairs (map (fn [[k v]]
                            (str (cond
                                   (string? k) (str "\"" k "\"")
+                                  (satisfies? RubyInspectable k) (str "\"" (to-s k) "\"")
                                   (keyword? k) (name k)
                                   :else (str k))
                                 "=>"
                                 (cond
                                   (string? v) (str "\"" v "\"")
+                                  (satisfies? RubyInspectable v) (if (string? (to-s v))
+                                                                    (str "\"" (to-s v) "\"")
+                                                                    (to-s v))
                                   (keyword? v) (name v)
-                                  (satisfies? RubyInspectable v) (to-s v)
                                   :else (str v))))
                          hash-data)]
           (str "{" (str/join ", " pairs) "}")))))
@@ -113,11 +118,11 @@
 
   (register-method "Hash" :keys
     (fn [ruby-hash]
-      (vec (keys @(:data ruby-hash)))))
+      (ruby-array/vector->ruby-array (vec (keys @(:data ruby-hash))))))
 
   (register-method "Hash" :values
     (fn [ruby-hash]
-      (vec (vals @(:data ruby-hash)))))
+      (ruby-array/vector->ruby-array (vec (vals @(:data ruby-hash))))))
 
   (register-method "Hash" :empty?
     (fn [ruby-hash]
@@ -144,27 +149,7 @@
       (hash-delete! ruby-hash key)))
 
   ;; Inherit Kernel methods
-  (register-method "Hash" :puts 
-    (fn [this & args]
-      (if (empty? args)
-        (println)
-        (doseq [arg args]
-          (println (if (satisfies? RubyInspectable arg) (to-s arg) (str arg)))))
-      nil))
-
-  (register-method "Hash" :p 
-    (fn [this & args]
-      (if (empty? args)
-        nil
-        (let [results (mapv #(if (satisfies? RubyInspectable %) (inspect %) (pr-str %)) args)]
-          (println (str/join " " results))
-          (if (= 1 (count results)) (first args) (vec args))))))
-
-  (register-method "Hash" :print 
-    (fn [this & args]
-      (doseq [arg args]
-        (print (if (satisfies? RubyInspectable arg) (to-s arg) (str arg))))
-      nil)))
+  (kernel/register-kernel-methods-for-class! "Hash"))
 
 ;; Register methods on namespace load
 (register-hash-methods!)

@@ -9,7 +9,7 @@
 # expected-output: --- Object.p ---
 # expected-output: "debugging" 42 true
 # expected-output: "single value"
-# expected-output: p returned: single value
+# expected-output: p returned: "single value"
 # expected-output:
 # expected-output: --- Object.print ---
 # expected-output: No newline here!

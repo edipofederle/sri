@@ -5,6 +5,8 @@
             [clojure.string]
             [sri.enumerable :as enum]
             [sri.ruby-classes-new :as ruby-classes]
+            [sri.ruby-object :as ruby-object]
+            [sri.ruby-string :as ruby-string]
             [sri.ruby-protocols :refer [to-s RubyComparable RubyInspectable RubyObject ruby-eq ruby-class]]
             [sri.ruby-method-registry :refer [method-lookup]]))
 
@@ -104,7 +106,7 @@
   (let [value (parser/get-value ast entity-id)]
     (cond
       (integer? value) value
-      (string? value) value
+      (string? value) (ruby-string/create-string value)
       (boolean? value) value
       (nil? value) nil
       :else value)))
@@ -126,25 +128,29 @@
 (defn interpret-interpolated-string
   "Interpret an interpolated string by evaluating expressions and concatenating."
   [ast entity-id variables]
-  (let [parts (parser/get-component ast entity-id :parts)]
-    (apply str (map (fn [part]
-                      (cond
-                        ;; Text part - return as is
-                        (string? part)
-                        part
+  (let [parts (parser/get-component ast entity-id :parts)
+        result (apply str (map (fn [part]
+                                (cond
+                                  ;; Text part - return as is
+                                  (string? part)
+                                  part
 
-                        ;; Expression part - parse and evaluate
-                        (and (map? part) (:source part))
-                        (let [expr-source (:source part)
-                              expr-tokens (sri.tokenizer/tokenize expr-source)
-                              temp-state (parser/create-parse-state expr-tokens)
-                              [final-state expr-id] (parser/parse-expression temp-state)]
-                          (str (interpret-expression (:ast final-state) expr-id variables)))
+                                  ;; Expression part - parse and evaluate
+                                  (and (map? part) (:source part))
+                                  (let [expr-source (:source part)
+                                        expr-tokens (sri.tokenizer/tokenize expr-source)
+                                        temp-state (parser/create-parse-state expr-tokens)
+                                        [final-state expr-id] (parser/parse-expression temp-state)
+                                        result (interpret-expression (:ast final-state) expr-id variables)]
+                                    (if (satisfies? RubyInspectable result)
+                                      (to-s result)
+                                      (str result)))
 
-                        ;; Unknown part type
-                        :else
-                        (str "UNKNOWN: " part)))
-                    parts))))
+                                  ;; Unknown part type
+                                  :else
+                                  (str "UNKNOWN: " part)))
+                              parts))]
+    (ruby-string/create-string result)))
 
 (defn interpolate-string
   "Interpolate #{} expressions in a string."
@@ -760,6 +766,7 @@
                   "]")
              (ruby-classes/ruby-hash? receiver) (to-s receiver)
              (keyword? receiver) (name receiver) ; Convert :hello to "hello"
+             (number? receiver) (ruby-classes/create-string (str receiver))
              :else (str receiver))
     "first" (cond
               (ruby-classes/ruby-array? receiver) (first @(:data receiver))
@@ -927,64 +934,9 @@
 
       ;; Function call: method(args)
       (case method-name
-        "puts" (do
-                 (if (empty? args)
-                   (println)
-                   (let [arg (first args)]
-                     (cond
-                       (ruby-classes/ruby-array? arg)
-                       ;; Print ruby array elements on separate lines
-                       (doseq [item @(:data arg)]
-                         (cond
-                           (nil? item) (println)
-                           (ruby-classes/ruby-range? item)
-                           ;; Use Ruby to_s for ranges
-                           (println (ruby-classes/invoke-ruby-method item :to_s))
-                           (keyword? item)
-                           ;; Print symbols without colon prefix
-                           (println (name item))
-                           :else
-                           (println item)))
-
-                       (vector? arg)
-                       ;; Print legacy vector elements on separate lines
-                       (doseq [item arg]
-                         (cond
-                           (nil? item) (println)
-                           (ruby-classes/ruby-range? item)
-                           ;; Use Ruby to_s for ranges
-                           (println (ruby-classes/invoke-ruby-method item :to_s))
-                           (keyword? item)
-                           ;; Print symbols without colon prefix
-                           (println (name item))
-                           :else
-                           (println item)))
-
-                       (ruby-classes/ruby-hash? arg)
-                       ;; Print hash in Ruby format
-                       (println (to-s arg))
-
-                       (keyword? arg)
-                       ;; Print symbols without colon prefix (Ruby behavior)
-                       (println (name arg))
-
-                       (ruby-classes/ruby-range? arg)
-                       ;; Print ranges using Ruby to_s
-                       (println (ruby-classes/invoke-ruby-method arg :to_s))
-
-                       :else
-                       (println arg))))
-                 nil)
-        "print" (do
-                  (let [arg (first args)]
-                    (if (keyword? arg)
-                      (print (name arg))
-                      (print arg)))
-                  (flush)
-                  nil)
-        "p" (do
-              (prn (first args))
-              (first args))
+        "puts" (apply ruby-classes/invoke-ruby-method (ruby-object/create-object) :puts args)
+        "print" (apply ruby-classes/invoke-ruby-method (ruby-object/create-object) :print args)
+        "p" (apply ruby-classes/invoke-ruby-method (ruby-object/create-object) :p args)
 
         "eval" (if (empty? args)
                    (throw (ex-info "eval requires a string argument" {:args args}))
