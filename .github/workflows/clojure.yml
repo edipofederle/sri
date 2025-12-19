@@ -13,16 +13,18 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Set up Java
-      uses: actions/setup-java@v4
+    - name: Set up GraalVM
+      uses: graalvm/setup-graalvm@v1
       with:
         java-version: '11'
-        distribution: 'temurin'
+        distribution: 'graalvm'
     - name: Install Clojure tools
       uses: DeLaGuardo/setup-clojure@12.5
       with:
         lein: 2.10.0
     - name: Install dependencies
       run: lein deps
+    - name: Build native
+      run: ./build-native
     - name: Run tests
       run: lein test
