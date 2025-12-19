@@ -16,7 +16,7 @@ jobs:
     - name: Set up GraalVM
       uses: graalvm/setup-graalvm@v1
       with:
-        java-version: '11'
+        java-version: '21'
         distribution: 'graalvm'
     - name: Install Clojure tools
       uses: DeLaGuardo/setup-clojure@12.5
