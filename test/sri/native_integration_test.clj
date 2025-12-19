@@ -23,7 +23,7 @@
   (let [binary-path (if (.exists (io/file "./target/sri"))
                       "./target/sri"
                       native-binary)
-        result (sh binary-path file-path :dir "/Users/edipo/sri")]
+        result (sh binary-path file-path)]
     (if (zero? (:exit result))
       (str/trim (:out result))
       (throw (ex-info (str "Ruby program failed: " file-path " (using " binary-path ")")
