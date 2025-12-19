@@ -258,6 +258,20 @@
         receiver-val (interpret-expression ast receiver-id variables)
         index-val (interpret-expression ast index-id variables)]
     (cond
+      ;; Ruby string access
+      (= (type receiver-val) sri.ruby_string.RubyString)
+      (let [str-val (:value receiver-val)
+            len (count str-val)
+            actual-index (if (< index-val 0) (+ len index-val) index-val)]
+        (cond
+          ;; Single character access
+          (integer? index-val)
+          (if (and (>= actual-index 0) (< actual-index len))
+            (ruby-string/->RubyString (str (nth str-val actual-index)))
+            nil)
+          :else
+          (throw (ex-info "Invalid string indexing arguments" {:index index-val}))))
+
       ;; Ruby array access (check first)
       (ruby-classes/ruby-array? receiver-val)
       (cond

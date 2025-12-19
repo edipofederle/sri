@@ -16,7 +16,7 @@
   (ruby-class [_] "String")
   (ruby-ancestors [_] ["String" "Object" "Kernel" "BasicObject"])
   (respond-to? [_ method-name]
-    (contains? #{:to_s :inspect :length :size :upcase :downcase :+ :== :!= 
+    (contains? #{:to_s :inspect :length :size :upcase :downcase :+ :== :!=
                  :< :> :<= :>= :<=> :empty? :reverse :capitalize :strip
                  :start_with? :end_with? :include? :index :rindex
                  "[]" :slice :gsub :sub :split :chomp :chop
@@ -24,11 +24,11 @@
                  :kind_of? :is_a? :class :nil? :puts :p :print} method-name))
   (get-ruby-method [this method-name]
     (method-lookup this method-name))
-  
+
   RubyInspectable
   (to-s [this] (:value this))
   (inspect [this] (str "\"" (:value this) "\""))
-  
+
   RubyComparable
   (ruby-eq [this other]
     (cond
@@ -67,10 +67,10 @@
   (register-method "String" :length #(count (:value %)))
   (register-method "String" :size #(count (:value %))) ; alias for length
 
-  (register-method "String" :upcase 
+  (register-method "String" :upcase
     #(->RubyString (str/upper-case (:value %))))
 
-  (register-method "String" :downcase 
+  (register-method "String" :downcase
     #(->RubyString (str/lower-case (:value %))))
 
   (register-method "String" :capitalize
@@ -91,7 +91,7 @@
       (cond
         ;; Ruby String + Ruby String
         (instance? RubyString str2) (->RubyString (str (:value str1) (:value str2)))
-        ;; Ruby String + Java String  
+        ;; Ruby String + Java String
         (string? str2) (->RubyString (str (:value str1) str2))
         ;; Ruby String + Number or other types (convert to string)
         :else (->RubyString (str (:value str1) (str str2))))))
@@ -172,7 +172,7 @@
           (if (and (>= index 0) (< index len))
             (->RubyString (str (nth str-val index)))
             nil)
-          
+
           (and (integer? index) (= 1 (count args)) (integer? (first args)))
           ;; Substring: str[start, length]
           (let [start index
@@ -181,12 +181,12 @@
               (let [end-pos (min (+ start length) len)]
                 (->RubyString (subs str-val start end-pos)))
               (->RubyString "")))
-          
+
           :else
-          (throw (ex-info "Invalid string indexing arguments" 
+          (throw (ex-info "Invalid string indexing arguments"
                          {:index index :args args}))))))
 
-  (register-method "String" :slice 
+  (register-method "String" :slice
     (fn [string-obj index & args]
       (let [str-val (:value string-obj)
             len (count str-val)]
@@ -196,7 +196,7 @@
           (if (and (>= index 0) (< index len))
             (->RubyString (str (nth str-val index)))
             nil)
-          
+
           (and (integer? index) (= 1 (count args)) (integer? (first args)))
           ;; Substring: str.slice(start, length)
           (let [start index
@@ -205,9 +205,9 @@
               (let [end-pos (min (+ start length) len)]
                 (->RubyString (subs str-val start end-pos)))
               (->RubyString "")))
-          
+
           :else
-          (throw (ex-info "Invalid string slicing arguments" 
+          (throw (ex-info "Invalid string slicing arguments"
                          {:index index :args args}))))))
 
   ;; String manipulation
@@ -216,7 +216,7 @@
       (let [str-val (:value string-obj)
             separator (if (empty? args) "\n" (first args))
             sep-val (if (instance? RubyString separator) (:value separator) separator)]
-        (->RubyString 
+        (->RubyString
           (if (str/ends-with? str-val sep-val)
             (subs str-val 0 (- (count str-val) (count sep-val)))
             str-val)))))
