@@ -640,7 +640,9 @@
 (defn try-class-method-call
   "Try to execute a class method call, return ::method-not-found if method not found."
   [receiver method-name args variables ast]
-  (if (and (map? receiver) (:name receiver) (:class-methods receiver))
+  (cond
+    ;; Handle classes with class-methods
+    (and (map? receiver) (:name receiver) (:class-methods receiver))
     (let [class-methods (if (instance? clojure.lang.Atom (:class-methods receiver))
                           @(:class-methods receiver)  ; User-defined class (atom)
                           (:class-methods receiver))] ; Built-in class (regular map)
@@ -655,7 +657,18 @@
           :else
           (handle-user-defined-class-method method-info args variables ast))
         ::method-not-found))
-    ::method-not-found))
+
+    ;; Handle modules with methods (def self.method_name goes in :methods for modules)
+    (and (map? receiver) (:type receiver) (= (:type receiver) :module) (:methods receiver))
+    (let [module-methods (if (instance? clojure.lang.Atom (:methods receiver))
+                          @(:methods receiver)  ; Module methods are stored in atom
+                          (:methods receiver))]
+      (if-let [method-info (get module-methods method-name)]
+        (handle-user-defined-class-method method-info args variables ast)
+        ::method-not-found))
+
+    ;; No match
+    :else ::method-not-found))
 
 (defn try-instance-method-call
   "Try to execute an instance method call, return ::method-not-found if method not found."
@@ -1426,9 +1439,6 @@
                        nil)]
     (throw (ex-info "return" {:type :return :value return-value}))))
 
-
-
-
 (defn resolve-qualified-name
   "Resolve a qualified name like [\"Foo\", \"Bar\"] to a full path string."
   [qualified-parts _variables]
@@ -1490,6 +1500,18 @@
               (cond
                 ;; Module methods (def method_name)
                 (= method-type :method-definition)
+                (let [method-name (parser/get-component ast method-id :name)
+                      method-params (parser/get-component ast method-id :parameters)
+                      method-body (parser/get-component ast method-id :body)]
+                  (swap! module-methods assoc method-name
+                         {:name method-name
+                          :parameters method-params
+                          :body method-body
+                          :module qualified-name
+                          :ast ast}))
+
+                ;; Module class methods (def self.method_name)
+                (= method-type :class-method-definition)
                 (let [method-name (parser/get-component ast method-id :name)
                       method-params (parser/get-component ast method-id :parameters)
                       method-body (parser/get-component ast method-id :body)]

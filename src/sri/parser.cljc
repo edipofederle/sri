@@ -658,9 +658,10 @@
   [state]
   (when (match-token? state :operator "{")
     (let [[open-brace state-after-open] (consume-token state)
-          [pairs final-state] (if (match-token? state-after-open :operator "}")
-                                [[] state-after-open]
-                                (loop [current-state state-after-open
+          state-skip-newlines (skip-separators state-after-open)
+          [pairs final-state] (if (match-token? state-skip-newlines :operator "}")
+                                [[] state-skip-newlines]
+                                (loop [current-state state-skip-newlines
                                        pairs []]
                                   (let [[state-after-key key-id] (parse-hash-key-with-shorthand current-state)
                                         ;; Handle both : and => syntax
@@ -673,18 +674,20 @@
                                                                           (throw (ex-info "Expected ':' or '=>' in hash literal"
                                                                                          {:token (current-token state-after-key)})))
                                         [state-after-value value-id] (parse-expression state-after-arrow)
+                                        state-after-value-skip (skip-separators state-after-value)
                                         new-pairs (conj pairs [key-id value-id])]
                                     (cond
-                                      (match-token? state-after-value :operator "}")
-                                      [new-pairs state-after-value]
-                                      (match-token? state-after-value :operator ",")
-                                      (let [[_ state-after-comma] (consume-token state-after-value)]
-                                        (if (match-token? state-after-comma :operator "}")
-                                          [new-pairs state-after-comma] ; trailing comma
-                                          (recur state-after-comma new-pairs)))
+                                      (match-token? state-after-value-skip :operator "}")
+                                      [new-pairs state-after-value-skip]
+                                      (match-token? state-after-value-skip :operator ",")
+                                      (let [[_ state-after-comma] (consume-token state-after-value-skip)
+                                            state-skip-newlines-after-comma (skip-separators state-after-comma)]
+                                        (if (match-token? state-skip-newlines-after-comma :operator "}")
+                                          [new-pairs state-skip-newlines-after-comma] ; trailing comma
+                                          (recur state-skip-newlines-after-comma new-pairs)))
                                       :else
                                       (throw (ex-info "Expected ',' or '}' in hash literal"
-                                                     {:token (current-token state-after-value)}))))))
+                                                     {:token (current-token state-after-value-skip)}))))))
           [_ state-after-close] (consume-token final-state)
           [new-ast entity-id] (create-node (:ast state-after-close) :hash-literal
                                          :pairs pairs
