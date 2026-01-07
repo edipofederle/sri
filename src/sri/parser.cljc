@@ -976,7 +976,9 @@
           (let [new-ast (set-component (:ast current-state) block-id :statements statements)]
             [(assoc current-state :ast new-ast) block-id])
 
-          (match-token? current-state :keyword "else")
+          (or (match-token? current-state :keyword "else")
+              (match-token? current-state :keyword "rescue")
+              (match-token? current-state :keyword "ensure"))
           (let [new-ast (set-component (:ast current-state) block-id :statements statements)]
             [(assoc current-state :ast new-ast) block-id])
 
@@ -1027,6 +1029,51 @@
                                          :condition condition-id
                                          :body body-id)]
       [(assoc final-state :ast new-ast) entity-id])))
+
+(defn parse-begin-statement
+  "Parse a begin/rescue/ensure/end exception handling block."
+  [state]
+  (when (match-token? state :keyword "begin")
+    (let [[_ state-after-begin] (consume-token state)
+          state-skip-newlines (skip-separators state-after-begin)
+          [state-after-body body-id] (parse-block state-skip-newlines)]
+      
+      ;; Parse rescue clauses
+      (loop [current-state state-after-body
+             rescue-clauses []]
+        (if (match-token? current-state :keyword "rescue")
+          ;; Parse rescue clause
+          (let [[_ state-after-rescue] (consume-token current-state)
+                ;; Check for exception variable binding (=> var)
+                [state-after-exception exception-var] 
+                (if (match-token? state-after-rescue :operator "=>")
+                  (let [[_ state-after-arrow] (consume-token state-after-rescue)]
+                    (if (match-token? state-after-arrow :identifier)
+                      (let [[var-token state-after-var] (consume-token state-after-arrow)]
+                        [state-after-var (:value var-token)])
+                      [state-after-arrow nil]))
+                  [state-after-rescue nil])
+                
+                state-skip-rescue-newlines (skip-separators state-after-exception)
+                [state-after-rescue-body rescue-body-id] (parse-block state-skip-rescue-newlines)
+                rescue-clause {:body rescue-body-id :variable exception-var}]
+            (recur state-after-rescue-body (conj rescue-clauses rescue-clause)))
+          
+          ;; Check for ensure clause
+          (let [[state-after-ensure ensure-body-id]
+                (if (match-token? current-state :keyword "ensure")
+                  (let [[_ state-after-ensure-kw] (consume-token current-state)
+                        state-skip-ensure-newlines (skip-separators state-after-ensure-kw)
+                        [state-after-ensure-body ensure-body-id] (parse-block state-skip-ensure-newlines)]
+                    [state-after-ensure-body ensure-body-id])
+                  [current-state nil])
+                
+                [_ final-state] (expect-token state-after-ensure :keyword "end")
+                [new-ast entity-id] (create-node (:ast final-state) :begin-statement
+                                               :body body-id
+                                               :rescue-clauses rescue-clauses
+                                               :ensure-clause ensure-body-id)]
+            [(assoc final-state :ast new-ast) entity-id]))))))
 
 (defn parse-for-variables
   "Parse variable list for for loop: 'i' or 'i, j' or 'i, *rest' or 'i,'."
@@ -1714,6 +1761,7 @@
                         (parse-method-definition state)
                         (parse-if-statement state)
                         (parse-while-statement state)
+                        (parse-begin-statement state)
                         (parse-for-statement state)
                         (parse-until-statement state)
                         (parse-case-statement state)
@@ -1918,6 +1966,7 @@
       :class-method-definition (str "def self." name "(" (clojure.string/join ", " parameters) ")")
       :if-statement "if"
       :while-statement "while"
+      :begin-statement "begin"
       :for-statement (str "for " variable " in ...")
       :until-statement "until"
       :loop-statement "loop"

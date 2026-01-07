@@ -84,7 +84,8 @@
             [sri.ruby-hash :as ruby-hash]
             [sri.ruby-rational :as ruby-rational]
             [sri.ruby-complex :as ruby-complex]
-            [sri.ruby-numeric :as ruby-numeric]))
+            [sri.ruby-numeric :as ruby-numeric]
+            [sri.ruby-exception :as ruby-exception]))
 
 ;; =============================================================================
 ;; Re-export Constructor Functions
@@ -526,6 +527,188 @@
      (numeric-ruby-ancestors 42)  ; => [\"Integer\" \"Numeric\" \"Object\" \"Kernel\" \"BasicObject\"]"
   ruby-numeric/numeric-ruby-ancestors)
 
+;; Exception
+(def create-exception
+  "Creates a Ruby Exception object.
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance
+
+   Examples:
+     (create-exception \"Something went wrong\")
+     (create-exception \"Error\" [\"file.rb:1:in `<main>`\"] nil)"
+  ruby-exception/create-exception)
+
+(def create-standard-error
+  "Creates a Ruby StandardError (default rescue type).
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings 
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with StandardError class
+
+   Example:
+     (create-standard-error \"Standard error occurred\")"
+  ruby-exception/create-standard-error)
+
+(def create-runtime-error
+  "Creates a Ruby RuntimeError (default for raise with string).
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one  
+
+   Returns: A new RubyException instance with RuntimeError class
+
+   Example:
+     (create-runtime-error \"Something went wrong\")"
+  ruby-exception/create-runtime-error)
+
+(def create-no-method-error
+  "Creates a Ruby NoMethodError.
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with NoMethodError class
+
+   Example:
+     (create-no-method-error \"undefined method `foo` for Object\")"
+  ruby-exception/create-no-method-error)
+
+(def create-argument-error
+  "Creates a Ruby ArgumentError.
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with ArgumentError class
+
+   Example:
+     (create-argument-error \"wrong number of arguments\")"
+  ruby-exception/create-argument-error)
+
+(def create-local-jump-error
+  "Creates a Ruby LocalJumpError (for invalid break/next/return).
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with LocalJumpError class
+
+   Example:
+     (create-local-jump-error \"unexpected break\")"
+  ruby-exception/create-local-jump-error)
+
+(def create-name-error
+  "Creates a Ruby NameError (undefined variable/constant).
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with NameError class
+
+   Example:
+     (create-name-error \"undefined local variable or method `foo`\")"
+  ruby-exception/create-name-error)
+
+(def create-type-error
+  "Creates a Ruby TypeError.
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with TypeError class
+
+   Example:
+     (create-type-error \"no implicit conversion of String into Integer\")"
+  ruby-exception/create-type-error)
+
+(def create-syntax-error
+  "Creates a Ruby SyntaxError.
+
+   Args:
+     message: Exception message string
+     backtrace (optional): Array of backtrace strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with SyntaxError class
+
+   Example:
+     (create-syntax-error \"unexpected end-of-input\")"
+  ruby-exception/create-syntax-error)
+
+(def ruby-exception?
+  "Checks if the given object is a Ruby exception.
+
+   Args:
+     obj: Object to check
+
+   Returns: true if obj is a RubyException, false otherwise
+
+   Example:
+     (ruby-exception? (create-runtime-error \"test\"))  ; => true
+     (ruby-exception? \"string\")                        ; => false"
+  ruby-exception/ruby-exception?)
+
+(def standard-error?
+  "Checks if an exception is a StandardError or its subclass.
+
+   Args:
+     exception: Exception object to check
+
+   Returns: true if exception inherits from StandardError
+
+   Example:
+     (standard-error? (create-runtime-error \"test\"))  ; => true
+     (standard-error? (create-syntax-error \"test\"))   ; => false"
+  ruby-exception/standard-error?)
+
+(def exception-inherits-from?
+  "Checks if an exception inherits from a given class name.
+
+   Args:
+     exception: Exception object to check
+     class-name: String name of the class to check inheritance from
+
+   Returns: true if exception inherits from the specified class
+
+   Example:
+     (exception-inherits-from? (create-runtime-error \"test\") \"StandardError\")  ; => true"
+  ruby-exception/exception-inherits-from?)
+
+(def invoke-exception-method
+  "Invokes a method on a Ruby exception object.
+
+   Args:
+     exception: RubyException object
+     method-name: Method name (keyword)
+     args: Method arguments
+
+   Returns: Method result
+
+   Examples:
+     (invoke-exception-method exc :message [])     ; => \"Error message\"
+     (invoke-exception-method exc :backtrace [])   ; => [\"file.rb:1:in `<main>`\"]"
+  ruby-exception/invoke-exception-method)
+
 ;; =============================================================================
 ;; Re-export Record Constructors (Advanced/Internal Use)
 ;; =============================================================================
@@ -569,6 +752,11 @@
   "Direct record constructor for RubyComplex.
    Advanced usage - prefer create-complex for normal use."
   ruby-complex/->RubyComplex)
+
+(def ->RubyException
+  "Direct record constructor for RubyException.
+   Advanced usage - prefer create-exception or specific exception constructors for normal use."
+  ruby-exception/->RubyException)
 
 ;; =============================================================================
 ;; Method Call Interface

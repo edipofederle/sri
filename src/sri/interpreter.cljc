@@ -11,7 +11,7 @@
             [sri.ruby-method-registry :refer [method-lookup]]))
 
 
-(declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program)
+(declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program interpret-block)
 
 ;; Global variables store
 (defonce global-variables (atom {}))
@@ -1019,6 +1019,29 @@
                                    {:type :local-jump-error
                                     :method "yield"}))))
 
+        "raise" (cond
+                  ;; raise with no arguments - raise RuntimeError with empty message for now
+                  (empty? args)
+                  (let [exception (ruby-classes/create-runtime-error "")]
+                    (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
+
+                  ;; raise with string - create RuntimeError with the message
+                  (or (string? (first args)) (satisfies? ruby-classes/RubyInspectable (first args)))
+                  (let [message (if (string? (first args))
+                                  (first args)
+                                  (ruby-classes/to-s (first args)))
+                        exception (ruby-classes/create-runtime-error message)]
+                    (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
+
+                  ;; raise with exception object
+                  (ruby-classes/ruby-exception? (first args))
+                  (let [exception (first args)]
+                    (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
+
+                  ;; raise with exception class (not yet implemented - would need class instantiation)
+                  :else
+                  (throw (ex-info "Invalid arguments to raise" {:args args})))
+
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
@@ -1181,6 +1204,52 @@
         condition-val (interpret-expression ast condition variables)]
     (when condition-val
       (interpret-expression ast statement variables))))
+
+(defn interpret-begin-statement
+  "Interpret begin/rescue/ensure/end exception handling block."
+  [ast entity-id variables]
+  (let [body (parser/get-component ast entity-id :body)
+        rescue-clauses (parser/get-component ast entity-id :rescue-clauses)
+        ensure-clause (parser/get-component ast entity-id :ensure-clause)]
+    (try
+      ;; Execute the main body
+      (interpret-expression ast body variables)
+      (catch clojure.lang.ExceptionInfo e
+        (let [exception-data (.getData e)]
+          (if (= (:type exception-data) :ruby-exception)
+            ;; This is a Ruby exception, handle with rescue clauses
+            (let [ruby-exception (:exception exception-data)]
+              ;; Set global exception variables
+              (swap! global-variables assoc "$!" ruby-exception)
+              (swap! global-variables assoc "$@" []) ;; TODO: Generate proper backtrace
+
+              ;; Try each rescue clause
+              (if (and rescue-clauses (seq rescue-clauses))
+                (loop [clauses rescue-clauses]
+                  (if (seq clauses)
+                    (let [clause (first clauses)
+                          rescue-body (:body clause)
+                          exception-var (:variable clause)]
+                      ;; Bind exception variable if specified
+                      (when exception-var
+                        (swap! variables assoc exception-var ruby-exception))
+
+                      ;; For now, catch all StandardErrors (Ruby default behavior)
+                      (if (ruby-classes/standard-error? ruby-exception)
+                        ;; Execute this rescue clause
+                        (interpret-block ast rescue-body variables)
+                        ;; Try next rescue clause
+                        (recur (rest clauses))))
+                    ;; No matching rescue clause found - re-throw
+                    (throw e)))
+                ;; No rescue clauses - re-throw
+                (throw e)))
+            ;; Not a Ruby exception, re-throw
+            (throw e))))
+      (finally
+        ;; Always execute ensure clause if present
+        (when ensure-clause
+          (interpret-expression ast ensure-clause variables))))))
 
 (defn interpret-while-statement
   "Interpret while loop with break/continue support."
@@ -1735,6 +1804,7 @@
        :if-statement (interpret-if-statement ast entity-id variables)
        :postfix-if (interpret-postfix-if ast entity-id variables)
        :while-statement (interpret-while-statement ast entity-id variables)
+       :begin-statement (interpret-begin-statement ast entity-id variables)
        :for-statement (interpret-for-statement ast entity-id variables)
        :until-statement (interpret-until-statement ast entity-id variables)
        :loop-statement (interpret-loop-statement ast entity-id variables)
@@ -1797,6 +1867,7 @@
        :if-statement (interpret-if-statement ast entity-id variables)
        :postfix-if (interpret-postfix-if ast entity-id variables)
        :while-statement (interpret-while-statement ast entity-id variables)
+       :begin-statement (interpret-begin-statement ast entity-id variables)
        :for-statement (interpret-for-statement ast entity-id variables)
        :until-statement (interpret-until-statement ast entity-id variables)
        :loop-statement (interpret-loop-statement ast entity-id variables)
