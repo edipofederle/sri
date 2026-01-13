@@ -814,7 +814,7 @@
   [state]
   (let [result (or (when (match-token? state :operator "-")
                      (let [[minus-token state-after-minus] (consume-token state)
-                           [state-after-operand operand-id] (parse-atomic state-after-minus)
+                           [state-after-operand operand-id] (parse-primary state-after-minus)
                            [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
                                                          :operator "-"
                                                          :operand operand-id
@@ -822,7 +822,7 @@
                        [(assoc state-after-operand :ast new-ast) unary-id]))
                    (when (match-token? state :operator "!")
                      (let [[not-token state-after-not] (consume-token state)
-                           [state-after-operand operand-id] (parse-atomic state-after-not)
+                           [state-after-operand operand-id] (parse-primary state-after-not)
                            [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
                                                          :operator "!"
                                                          :operand operand-id
@@ -830,7 +830,7 @@
                        [(assoc state-after-operand :ast new-ast) unary-id]))
                    (when (match-token? state :keyword "not")
                      (let [[not-token state-after-not] (consume-token state)
-                           [state-after-operand operand-id] (parse-atomic state-after-not)
+                           [state-after-operand operand-id] (parse-primary state-after-not)
                            [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
                                                          :operator "not"
                                                          :operand operand-id
@@ -838,7 +838,7 @@
                        [(assoc state-after-operand :ast new-ast) unary-id]))
                    (when (match-token? state :operator "*")
                      (let [[splat-token state-after-splat] (consume-token state)
-                           [state-after-operand operand-id] (parse-atomic state-after-splat)
+                           [state-after-operand operand-id] (parse-primary state-after-splat)
                            [new-ast splat-id] (create-node (:ast state-after-operand) :splat-operation
                                                          :operand operand-id
                                                          :position {:line (:line splat-token) :column (:column splat-token)})]
