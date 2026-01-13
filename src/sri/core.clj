@@ -62,6 +62,7 @@
           (System/exit 1))
         (catch Exception e
           (println "Error reading file:" (.getMessage e))
+          (.printStackTrace e)
           (System/exit 1))))
     (do
       (println "Sri - Ruby Interpreter")

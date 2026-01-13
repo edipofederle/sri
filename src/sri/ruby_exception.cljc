@@ -9,7 +9,7 @@
    Exception
    ├── StandardError (default for rescue)
    │   ├── RuntimeError
-   │   ├── NoMethodError  
+   │   ├── NoMethodError
    │   ├── ArgumentError
    │   ├── LocalJumpError
    │   ├── NameError
@@ -41,7 +41,7 @@
 (defrecord RubyException [message backtrace cause exception-class]
   RubyObject
   (ruby-class [_] exception-class)
-  (ruby-ancestors [_] 
+  (ruby-ancestors [_]
     (case exception-class
       "Exception" ["Exception", "Object", "Kernel", "BasicObject"]
       "StandardError" ["StandardError", "Exception", "Object", "Kernel", "BasicObject"]
@@ -60,9 +60,9 @@
       ["Exception", "Object", "Kernel", "BasicObject"]))
 
   RubyInspectable
-  (to-s [_] 
+  (to-s [_]
     (str message))
-  (inspect [this] 
+  (inspect [this]
     (str "#<" exception-class ": " message ">")))
 
 ;; =============================================================================
@@ -157,7 +157,7 @@
     (let [msg (:message exception)
           bt (:backtrace exception)
           class-name (:exception-class exception)]
-      (str class-name ": " msg 
+      (str class-name ": " msg
            (when (seq bt)
              (str "\n" (clojure.string/join "\n" bt)))))
     (throw (ex-info "full_message called on non-exception object" {:object exception}))))

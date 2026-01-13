@@ -270,13 +270,17 @@
             (ruby-string/->RubyString (str (nth str-val actual-index)))
             nil)
           :else
-          (throw (ex-info "Invalid string indexing arguments" {:index index-val}))))
+          (let [exception (ruby-classes/create-type-error
+                           (str "no implicit conversion of " (type index-val) " into Integer"))]
+            (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
 
       ;; Ruby array access (check first)
       (ruby-classes/ruby-array? receiver-val)
       (cond
         (not (integer? index-val))
-        (throw (ex-info "Array index must be integer" {:array receiver-val :index index-val}))
+        (let [exception (ruby-classes/create-type-error
+                         (str "no implicit conversion of " (type index-val) " into Integer"))]
+          (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
 
         :else
         (let [array-data @(:data receiver-val)
@@ -297,7 +301,9 @@
       (vector? receiver-val)
       (cond
         (not (integer? index-val))
-        (throw (ex-info "Array index must be integer" {:array receiver-val :index index-val}))
+        (let [exception (ruby-classes/create-type-error
+                         (str "no implicit conversion of " (type index-val) " into Integer"))]
+          (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
 
         :else
         (let [idx (if (< index-val 0) (+ (count receiver-val) index-val) index-val)]
@@ -308,7 +314,9 @@
             nil)))
 
       :else
-      (throw (ex-info "Access on invalid type" {:receiver receiver-val :index index-val})))))
+      (let [exception (ruby-classes/create-type-error
+                       (str "[] operator not supported for " (type receiver-val)))]
+        (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
 
 (defn interpret-array-assignment
   "Interpret array assignment like arr[0] = value."
@@ -587,11 +595,17 @@
   (case method-name
     "max" (if (= 2 (count args))
             (let [[a b] args] (max a b))
-            (throw (ex-info "Integer.max requires exactly 2 arguments" {:args args})))
+            (let [exception (ruby-classes/create-argument-error
+                             (str "wrong number of arguments (given " (count args) ", expected 2)"))]
+              (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
     "sqrt" (if (= 1 (count args))
              (int (Math/sqrt (first args)))
-             (throw (ex-info "Integer.sqrt requires exactly 1 argument" {:args args})))
-    (throw (ex-info (str "Unknown built-in class method: " method-name) {:method method-name}))))
+             (let [exception (ruby-classes/create-argument-error
+                              (str "wrong number of arguments (given " (count args) ", expected 1)"))]
+               (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
+    (let [exception (ruby-classes/create-no-method-error
+                     (str "undefined method `" method-name "` for Integer:Class"))]
+      (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
 
 (defn handle-ruby-class-method
   "Handle Ruby class methods from our new class hierarchy."
@@ -609,13 +623,18 @@
                        :methods (atom {})
                        :ast nil
                        :body-id nil}
-                      (throw (ex-info "Module.new does not accept arguments" {:args args})))
+                      (let [exception (ruby-classes/create-argument-error
+                                       (str "wrong number of arguments (given " (count args) ", expected 0)"))]
+                        (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
     ["Range" "new"] (case (count args)
                       2 (ruby-classes/->RubyRange (first args) (second args) true)  ; Default inclusive
                       3 (ruby-classes/->RubyRange (first args) (second args) (nth args 2))  ; Explicit inclusive flag
-                      (throw (ex-info "Range.new requires 2 or 3 arguments" {:args args})))
-    (throw (ex-info (str "Unknown Ruby class method: " class-name "." method-name)
-                    {:class class-name :method method-name}))))
+                      (let [exception (ruby-classes/create-argument-error
+                                       (str "wrong number of arguments (given " (count args) ", expected 2..3)"))]
+                        (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
+    (let [exception (ruby-classes/create-no-method-error
+                     (str "undefined method `" method-name "` for " class-name ":Class"))]
+      (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
 
 (defn handle-user-defined-class-method
   "Handle user-defined class methods with proper parameter binding and return handling."
@@ -976,8 +995,9 @@
             (not= builtin-result ::method-not-found) builtin-result
             new-result new-result
             ;; No method found
-            :else (throw (ex-info (str "Unknown method: " method-name " on " (type receiver))
-                                 {:method method-name :receiver receiver :args args})))))
+            :else (let [exception (ruby-classes/create-no-method-error
+                                   (str "undefined method `" method-name "` for " (type receiver)))]
+                    (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
 
       ;; Function call: method(args)
       (case method-name
@@ -986,7 +1006,9 @@
         "p" (apply ruby-classes/invoke-ruby-method (ruby-object/create-object) :p args)
 
         "eval" (if (empty? args)
-                   (throw (ex-info "eval requires a string argument" {:args args}))
+                   (let [exception (ruby-classes/create-argument-error
+                                    "wrong number of arguments (given 0, expected 1)")]
+                     (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
                    (let [code-str (first args)]
                      (if (string? code-str)
                        ;; Parse and evaluate the Ruby code string
@@ -999,7 +1021,9 @@
                          (catch Exception e
                            (throw (ex-info (str "eval error: " (.getMessage e))
                                           {:code code-str :original-error e}))))
-                       (throw (ex-info "eval argument must be a string" {:arg code-str :type (type code-str)})))))
+                       (let [exception (ruby-classes/create-type-error
+                                        (str "no implicit conversion of " (type code-str) " into String"))]
+                         (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
 
         "Rational" (let [num (or (first args) 0)
                            den (or (second args) 1)]
@@ -1015,9 +1039,8 @@
                     ;; Execute the stored block with yield arguments
                     (execute-block block-ast block-id variables args)
                     ;; No block provided - throw LocalJumpError (Ruby behavior)
-                    (throw (ex-info "no block given (yield)"
-                                   {:type :local-jump-error
-                                    :method "yield"}))))
+                    (let [exception (ruby-classes/create-local-jump-error "no block given (yield)")]
+                      (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
 
         "raise" (cond
                   ;; raise with no arguments - raise RuntimeError with empty message for now
@@ -1045,8 +1068,9 @@
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
-          (throw (ex-info (str "Unknown method: " method-name)
-                         {:method method-name :args args})))))))
+          (let [exception (ruby-classes/create-no-method-error
+                           (str "undefined method `" method-name "`"))]
+            (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))))
 
 (defn interpret-user-method
   "Interpret a call to user-defined method."
@@ -1077,9 +1101,9 @@
       (let [method-def (resolve-method-definition variables var-name)]
         (interpret-user-method ast entity-id variables method-def []))
       :else
-      (throw (ex-info (str "undefined variable: " var-name)
-                      {:variable var-name
-                       :type :undefined-variable})))))
+      (let [exception (ruby-classes/create-name-error
+                       (str "undefined local variable or method `" var-name "`"))]
+        (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
 
 (defn interpret-qualified-identifier
   "Interpret a qualified identifier like Module::Class."
