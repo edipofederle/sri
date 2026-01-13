@@ -1,6 +1,6 @@
 # Sri - Ruby Interpreter
 
-A Ruby interpreter implemented in Clojure with support for GraalVM native image compilation.
+A Ruby interpreter implemented in Clojure with support for GraalVM native image compilation. (VERY early stage. but already can run basic ruby program (see example directory))
 ## Building
 
 ### Prerequisites
@@ -46,19 +46,36 @@ Sri can now be used as a Clojure library for safe Ruby evaluation:
 
 ### Command Line Interface
 
-### Running with Java
+#### Evaluate Expressions
+
+Evaluate Ruby expressions directly from the command line using the `-e` flag:
+
 ```bash
-java -jar target/uberjar/sri-0.1.0-SNAPSHOT-standalone.jar <ruby-file>
+# With Leiningen
+lein run -e "10 + 20"                           # => 30
+lein run -e "'hello' + ' ' + 'world'"          # => hello world
+lein run -e "[1, 2, 3].length"                 # => 3
+
+# With Java
+java -jar target/uberjar/sri-0.1.0-SNAPSHOT-standalone.jar -e "10 + 20"
+
+# With Native Binary (if built)
+./target/sri -e "10 + 20"
 ```
 
-### Running with Native Binary (if built)
-```bash
-./target/sri <ruby-file>
-```
+#### Execute Ruby Files
 
-### Running with Leiningen
+Run Ruby programs from files:
+
 ```bash
+# With Leiningen
 lein run <ruby-file>
+
+# With Java
+java -jar target/uberjar/sri-0.1.0-SNAPSHOT-standalone.jar <ruby-file>
+
+# With Native Binary (if built)
+./target/sri <ruby-file>
 ```
 
 ## Examples
