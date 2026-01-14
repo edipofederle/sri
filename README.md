@@ -44,6 +44,36 @@ Sri can now be used as a Clojure library for safe Ruby evaluation:
 (sri/eval-string "[1, 2, 3, 4, 5].length")   ; => 5
 ```
 
+### Java API
+
+Sri provides a Java wrapper for easy integration with Java applications:
+
+```java
+import sri.Sri;
+
+public class Example {
+    public static void main(String[] args) {
+        // Basic evaluation
+        System.out.println(Sri.eval("10 + 20"));           // 30
+        System.out.println(Sri.eval("'hello'.upcase"));    // HELLO
+
+        // Array operations
+        System.out.println(Sri.eval("[1, 2, 3].map { |x| x * 2 }"));  // [2, 4, 6]
+
+        // Method definitions
+        System.out.println(Sri.eval("def greet(name); 'Hello ' + name; end; greet('World')"));
+        // Hello World
+    }
+}
+```
+
+Compile and run:
+
+```bash
+javac -cp target/uberjar/sri-0.1.0-SNAPSHOT-standalone.jar Example.java
+java -cp .:target/uberjar/sri-0.1.0-SNAPSHOT-standalone.jar Example
+```
+
 ### Command Line Interface
 
 #### Evaluate Expressions
@@ -107,6 +137,7 @@ lein test
 - `src/sri/tokenizer.cljc` - Lexical analyzer
 - `src/sri/parser.cljc` - AST parser
 - `src/sri/interpreter.cljc` - AST interpreter
+- `src/java/sri/Sri.java` - Java API wrapper
 - `examples/` - Ruby test programs
 
 ## License
