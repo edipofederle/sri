@@ -53,19 +53,25 @@
   [& args]
   (if (seq args)
     (let [filename (first args)]
-      (try
-        (let [source (slurp filename)
-              exit-code (evaluate source)]
-          (System/exit exit-code))
-        (catch java.io.FileNotFoundException _
-          (println "Error: File not found:" filename)
-          (System/exit 1))
-        (catch Exception e
-          (println "Error reading file:" (.getMessage e))
-          (.printStackTrace e)
-          (System/exit 1))))
+      (if (= "-e" (first args))
+        (eval-string (last args))
+        (try
+          (let [source (slurp filename)
+                exit-code (evaluate source)]
+            (System/exit exit-code))
+          (catch java.io.FileNotFoundException _
+            (println "Error: File not found:" filename)
+            (System/exit 1))
+          (catch Exception e
+            (println "Error reading file:" (.getMessage e))
+            (.printStackTrace e)
+            (System/exit 1)))))
     (do
       (println "Sri - Ruby Interpreter")
+      (println "=======================")
+      (println "\n")
       (println "Usage: sri <filename>")
+      (println "Usage: sri -e <code>")
+      (println "\n")
       (println "For library usage: (require 'sri.core) (sri.core/eval-string \"ruby code\")")
       (System/exit 1))))
