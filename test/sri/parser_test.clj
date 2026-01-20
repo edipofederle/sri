@@ -122,53 +122,57 @@
         (is (= :identifier (parser/get-component ast operand-id :node-type)))
         (is (= "x" (parser/get-component ast operand-id :value))))))
 
-  (testing "Parse unary operations in complex expressions"
+  (testing "Parse unary operations in complex expressions (+ as method call)"
     ;; Unary minus in binary operation - left side
     (let [[ast root-id] (parse-string "-5 + 3")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "+" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        (is (= :unary-operation (parser/get-component ast left-id :node-type)))
-        (is (= "-" (parser/get-component ast left-id :operator)))
-        (is (= :integer-literal (parser/get-component ast right-id :node-type)))
-        (is (= 3 (parser/get-component ast right-id :value)))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "+" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        (is (= :unary-operation (parser/get-component ast receiver-id :node-type)))
+        (is (= "-" (parser/get-component ast receiver-id :operator)))
+        (is (= :integer-literal (parser/get-component ast arg-id :node-type)))
+        (is (= 3 (parser/get-component ast arg-id :value)))))
 
     ;; Unary minus in binary operation - right side
     (let [[ast root-id] (parse-string "5 + -3")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "+" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        (is (= :integer-literal (parser/get-component ast left-id :node-type)))
-        (is (= 5 (parser/get-component ast left-id :value)))
-        (is (= :unary-operation (parser/get-component ast right-id :node-type)))
-        (is (= "-" (parser/get-component ast right-id :operator)))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "+" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        (is (= :integer-literal (parser/get-component ast receiver-id :node-type)))
+        (is (= 5 (parser/get-component ast receiver-id :value)))
+        (is (= :unary-operation (parser/get-component ast arg-id :node-type)))
+        (is (= "-" (parser/get-component ast arg-id :operator)))))
 
     ;; Unary minus in parentheses within binary operation
     (let [[ast root-id] (parse-string "(-10) + 5")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "+" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        (is (= :unary-operation (parser/get-component ast left-id :node-type)))
-        (is (= "-" (parser/get-component ast left-id :operator)))
-        (is (= :integer-literal (parser/get-component ast right-id :node-type)))
-        (is (= 5 (parser/get-component ast right-id :value)))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "+" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        (is (= :unary-operation (parser/get-component ast receiver-id :node-type)))
+        (is (= "-" (parser/get-component ast receiver-id :operator)))
+        (is (= :integer-literal (parser/get-component ast arg-id :node-type)))
+        (is (= 5 (parser/get-component ast arg-id :value)))))
 
     ;; Complex expression: 5 - (-3)
     (let [[ast root-id] (parse-string "5 - (-3)")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "-" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        (is (= :integer-literal (parser/get-component ast left-id :node-type)))
-        (is (= 5 (parser/get-component ast left-id :value)))
-        (is (= :unary-operation (parser/get-component ast right-id :node-type)))
-        (is (= "-" (parser/get-component ast right-id :operator)))
-        (let [right-operand-id (parser/get-component ast right-id :operand)]
-          (is (= :integer-literal (parser/get-component ast right-operand-id :node-type)))
-          (is (= 3 (parser/get-component ast right-operand-id :value)))))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "-" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        (is (= :integer-literal (parser/get-component ast receiver-id :node-type)))
+        (is (= 5 (parser/get-component ast receiver-id :value)))
+        (is (= :unary-operation (parser/get-component ast arg-id :node-type)))
+        (is (= "-" (parser/get-component ast arg-id :operator)))
+        (let [arg-operand-id (parser/get-component ast arg-id :operand)]
+          (is (= :integer-literal (parser/get-component ast arg-operand-id :node-type)))
+          (is (= 3 (parser/get-component ast arg-operand-id :value)))))))
 
   (testing "Parse unary operations in method calls"
     ;; Unary minus as method argument
@@ -199,35 +203,37 @@
               (is (= expected-value (parser/get-component ast operand-id :value))))))))))
 
 (deftest test-arithmetic-binary-operations
-  (testing "Parse arithmetic binary operations"
+  (testing "Parse arithmetic binary operations as method calls (Ruby style)"
     (let [[ast root-id] (parse-string "2 + 3")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "+" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        (is (= :integer-literal (parser/get-component ast left-id :node-type)))
-        (is (= 2 (parser/get-component ast left-id :value)))
-        (is (= :integer-literal (parser/get-component ast right-id :node-type)))
-        (is (= 3 (parser/get-component ast right-id :value)))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "+" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        (is (= :integer-literal (parser/get-component ast receiver-id :node-type)))
+        (is (= 2 (parser/get-component ast receiver-id :value)))
+        (is (= :integer-literal (parser/get-component ast arg-id :node-type)))
+        (is (= 3 (parser/get-component ast arg-id :value)))))
 
     (testing "All arithmetic operators"
       (doseq [op ["-" "*" "/" "%"]]
         (let [[ast root-id] (parse-string (str "5 " op " 2"))]
-          (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-          (is (= op (parser/get-component ast root-id :operator))))))))
+          (is (= :method-call (parser/get-component ast root-id :node-type)))
+          (is (= op (parser/get-component ast root-id :method))))))))
 
 (deftest test-comparison-binary-operations
-  (testing "Parse comparison binary operations"
+  (testing "Parse comparison binary operations as method calls (Ruby style)"
     (doseq [op ["==" "!=" "<" "<=" ">" ">="]]
       (let [[ast root-id] (parse-string (str "x " op " y"))]
-        (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-        (is (= op (parser/get-component ast root-id :operator)))
-        (let [left-id (parser/get-component ast root-id :left)
-              right-id (parser/get-component ast root-id :right)]
-          (is (= :identifier (parser/get-component ast left-id :node-type)))
-          (is (= "x" (parser/get-component ast left-id :value)))
-          (is (= :identifier (parser/get-component ast right-id :node-type)))
-          (is (= "y" (parser/get-component ast right-id :value))))))))
+        (is (= :method-call (parser/get-component ast root-id :node-type)))
+        (is (= op (parser/get-component ast root-id :method)))
+        (let [receiver-id (parser/get-component ast root-id :receiver)
+              args (parser/get-component ast root-id :arguments)
+              arg-id (first args)]
+          (is (= :identifier (parser/get-component ast receiver-id :node-type)))
+          (is (= "x" (parser/get-component ast receiver-id :value)))
+          (is (= :identifier (parser/get-component ast arg-id :node-type)))
+          (is (= "y" (parser/get-component ast arg-id :value))))))))
 
 (deftest test-logical-binary-operations
   (testing "Parse logical binary operations"
@@ -243,59 +249,62 @@
           (is (= false (parser/get-component ast right-id :value))))))))
 
 (deftest test-operator-precedence
-  (testing "Operator precedence is respected"
+  (testing "Operator precedence is respected (operators as method calls)"
     ;; Test multiplication has higher precedence than addition
     (let [[ast root-id] (parse-string "2 + 3 * 4")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "+" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        ;; Left should be simple integer
-        (is (= :integer-literal (parser/get-component ast left-id :node-type)))
-        (is (= 2 (parser/get-component ast left-id :value)))
-        ;; Right should be multiplication operation
-        (is (= :binary-operation (parser/get-component ast right-id :node-type)))
-        (is (= "*" (parser/get-component ast right-id :operator)))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "+" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        ;; Receiver should be simple integer
+        (is (= :integer-literal (parser/get-component ast receiver-id :node-type)))
+        (is (= 2 (parser/get-component ast receiver-id :value)))
+        ;; Argument should be multiplication operation
+        (is (= :method-call (parser/get-component ast arg-id :node-type)))
+        (is (= "*" (parser/get-component ast arg-id :method)))))
 
     ;; Test comparison has lower precedence than arithmetic
     (let [[ast root-id] (parse-string "2 + 3 == 5")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "==" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        ;; Left should be addition operation
-        (is (= :binary-operation (parser/get-component ast left-id :node-type)))
-        (is (= "+" (parser/get-component ast left-id :operator)))
-        ;; Right should be simple integer
-        (is (= :integer-literal (parser/get-component ast right-id :node-type)))
-        (is (= 5 (parser/get-component ast right-id :value)))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "==" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        ;; Receiver should be addition operation
+        (is (= :method-call (parser/get-component ast receiver-id :node-type)))
+        (is (= "+" (parser/get-component ast receiver-id :method)))
+        ;; Argument should be simple integer
+        (is (= :integer-literal (parser/get-component ast arg-id :node-type)))
+        (is (= 5 (parser/get-component ast arg-id :value)))))
 
-    ;; Test logical AND has lower precedence than comparison
+    ;; Test logical AND has lower precedence than comparison (and/or remain binary ops)
     (let [[ast root-id] (parse-string "x > 0 and y < 10")]
       (is (= :binary-operation (parser/get-component ast root-id :node-type)))
       (is (= "and" (parser/get-component ast root-id :operator)))
       (let [left-id (parser/get-component ast root-id :left)
             right-id (parser/get-component ast root-id :right)]
-        ;; Both sides should be comparison operations
-        (is (= :binary-operation (parser/get-component ast left-id :node-type)))
-        (is (= ">" (parser/get-component ast left-id :operator)))
-        (is (= :binary-operation (parser/get-component ast right-id :node-type)))
-        (is (= "<" (parser/get-component ast right-id :operator)))))))
+        ;; Both sides should be comparison operations (as method calls)
+        (is (= :method-call (parser/get-component ast left-id :node-type)))
+        (is (= ">" (parser/get-component ast left-id :method)))
+        (is (= :method-call (parser/get-component ast right-id :node-type)))
+        (is (= "<" (parser/get-component ast right-id :method)))))))
 
 (deftest test-left-associativity
-  (testing "Left associativity for same precedence operators"
-    ;; Test 1 - 2 - 3 parses as (1 - 2) - 3
+  (testing "Left associativity for same precedence operators (as method calls)"
+    ;; Test 1 - 2 - 3 parses as (1 - 2) - 3, i.e., (1.-( 2)).-( 3)
     (let [[ast root-id] (parse-string "1 - 2 - 3")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "-" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        ;; Left should be subtraction operation (1 - 2)
-        (is (= :binary-operation (parser/get-component ast left-id :node-type)))
-        (is (= "-" (parser/get-component ast left-id :operator)))
-        ;; Right should be simple integer 3
-        (is (= :integer-literal (parser/get-component ast right-id :node-type)))
-        (is (= 3 (parser/get-component ast right-id :value)))))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "-" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        ;; Receiver should be subtraction operation (1 - 2)
+        (is (= :method-call (parser/get-component ast receiver-id :node-type)))
+        (is (= "-" (parser/get-component ast receiver-id :method)))
+        ;; Argument should be simple integer 3
+        (is (= :integer-literal (parser/get-component ast arg-id :node-type)))
+        (is (= 3 (parser/get-component ast arg-id :value)))))))
 
 (deftest test-standalone-method-calls
   (testing "Parse standalone method calls"
@@ -373,16 +382,17 @@
 
 (deftest test-method-calls-in-expressions
   (testing "Parse method calls as part of larger expressions"
-      ;; Method call in binary operation
+      ;; Method call in binary operation (+ is now a method call in Ruby style)
     (let [[ast root-id] (parse-string "foo() + bar()")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "+" (parser/get-component ast root-id :operator)))
-      (let [left-id (parser/get-component ast root-id :left)
-            right-id (parser/get-component ast root-id :right)]
-        (is (= :method-call (parser/get-component ast left-id :node-type)))
-        (is (= "foo" (parser/get-component ast left-id :method)))
-        (is (= :method-call (parser/get-component ast right-id :node-type)))
-        (is (= "bar" (parser/get-component ast right-id :method)))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "+" (parser/get-component ast root-id :method)))
+      (let [receiver-id (parser/get-component ast root-id :receiver)
+            args (parser/get-component ast root-id :arguments)
+            arg-id (first args)]
+        (is (= :method-call (parser/get-component ast receiver-id :node-type)))
+        (is (= "foo" (parser/get-component ast receiver-id :method)))
+        (is (= :method-call (parser/get-component ast arg-id :node-type)))
+        (is (= "bar" (parser/get-component ast arg-id :method)))))
 
       ;; Method call as argument to another method call
     (let [[ast root-id] (parse-string "puts(getValue())")]
@@ -486,10 +496,10 @@
     (let [[ast root-id] (parse-statement-string "while x > 0\nresult\nend")]
       (is (= :while-statement (parser/get-component ast root-id :node-type)))
 
-      ;; Check condition
+      ;; Check condition (> is now a method call)
       (let [condition-id (parser/get-component ast root-id :condition)]
-        (is (= :binary-operation (parser/get-component ast condition-id :node-type)))
-        (is (= ">" (parser/get-component ast condition-id :operator))))
+        (is (= :method-call (parser/get-component ast condition-id :node-type)))
+        (is (= ">" (parser/get-component ast condition-id :method))))
 
       ;; Check body
       (let [body-id (parser/get-component ast root-id :body)]
@@ -593,13 +603,13 @@
 
 (deftest test-assignment-statement-with-expressions
   (testing "Parse assignment statements with complex expressions"
-    ;; Assignment with arithmetic expression
+    ;; Assignment with arithmetic expression (+ is now method call)
     (let [[ast root-id] (parse-statement-string "result = 2 + 3 * 4")]
       (is (= :assignment-statement (parser/get-component ast root-id :node-type)))
       (is (= "result" (parser/get-component ast root-id :variable)))
       (let [value-id (parser/get-component ast root-id :value)]
-        (is (= :binary-operation (parser/get-component ast value-id :node-type)))
-        (is (= "+" (parser/get-component ast value-id :operator)))))
+        (is (= :method-call (parser/get-component ast value-id :node-type)))
+        (is (= "+" (parser/get-component ast value-id :method)))))
 
     ;; Assignment with method call
     (let [[ast root-id] (parse-statement-string "output = puts(\"hello\")")]
@@ -648,10 +658,10 @@
       (is (= :assignment-statement (parser/get-component ast root-id :node-type)))
       (is (= "x" (parser/get-component ast root-id :variable))))
 
-    ;; Double == is equality comparison (should be parsed as expression)
+    ;; Double == is equality comparison (parsed as method call in Ruby style)
     (let [[ast root-id] (parse-statement-string "x == 5")]
-      (is (= :binary-operation (parser/get-component ast root-id :node-type)))
-      (is (= "==" (parser/get-component ast root-id :operator))))))
+      (is (= :method-call (parser/get-component ast root-id :node-type)))
+      (is (= "==" (parser/get-component ast root-id :method))))))
 
 (deftest test-method-definition-basic
   (testing "Parse basic method definitions"
@@ -686,8 +696,8 @@
         (let [statements (parser/get-component ast body-id :statements)]
           (is (= 1 (count statements)))
           (let [stmt-id (first statements)]
-            (is (= :binary-operation (parser/get-component ast stmt-id :node-type)))
-            (is (= "+" (parser/get-component ast stmt-id :operator)))))))))
+            (is (= :method-call (parser/get-component ast stmt-id :node-type)))
+            (is (= "+" (parser/get-component ast stmt-id :method)))))))))
 
 (deftest test-method-definition-complex
   (testing "Parse complex method definitions"
@@ -741,8 +751,8 @@
         (let [statements (parser/get-component ast body-id :statements)]
           (is (= 1 (count statements)))
           (let [stmt-id (first statements)]
-            (is (= :binary-operation (parser/get-component ast stmt-id :node-type)))
-            (is (= "+" (parser/get-component ast stmt-id :operator)))))))
+            (is (= :method-call (parser/get-component ast stmt-id :node-type)))
+            (is (= "+" (parser/get-component ast stmt-id :method)))))))
 
     ;; Multiple statements separated by semicolons
     (let [[ast root-id] (parse-statement-string "def process(); x = 1; y = 2; z = x + y; end")]
@@ -876,16 +886,16 @@
       (is (= :method-call (parser/get-component ast root-id :node-type)))
       (is (= "even?" (parser/get-component ast root-id :method)))
       (let [receiver-id (parser/get-component ast root-id :receiver)]
-        (is (= :binary-operation (parser/get-component ast receiver-id :node-type)))
-        (is (= "+" (parser/get-component ast receiver-id :operator)))))
+        (is (= :method-call (parser/get-component ast receiver-id :node-type)))
+        (is (= "+" (parser/get-component ast receiver-id :method)))))
 
     ;; Nested parentheses with method call
     (let [[ast root-id] (parse-string "((10 - 5)).abs")]
       (is (= :method-call (parser/get-component ast root-id :node-type)))
       (is (= "abs" (parser/get-component ast root-id :method)))
       (let [receiver-id (parser/get-component ast root-id :receiver)]
-        (is (= :binary-operation (parser/get-component ast receiver-id :node-type)))
-        (is (= "-" (parser/get-component ast receiver-id :operator)))))
+        (is (= :method-call (parser/get-component ast receiver-id :node-type)))
+        (is (= "-" (parser/get-component ast receiver-id :method)))))
 
     ;; Method call with arguments on parenthesized expression
     (let [[ast root-id] (parse-string "(-7).clamp(0, 10)")]

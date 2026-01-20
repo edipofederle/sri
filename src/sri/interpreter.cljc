@@ -84,6 +84,10 @@
   "Get the Ruby class name for an object."
   [obj]
   (cond
+    ;; Check if object implements RubyObject protocol FIRST (before map? check)
+    ;; because records like RubyString are also maps
+    (satisfies? RubyObject obj)
+    (ruby-class obj)
     ;; Module objects return "Module" as their class
     (and (map? obj) (= (:type obj) :module)) "Module"
     ;; Other built-in type classes
@@ -95,9 +99,6 @@
     (ruby-classes/ruby-hash? obj) "Hash"
     (vector? obj) "Array" ; Legacy support
     (map? obj) "Hash"     ; Legacy support
-    ;; Check if object implements RubyObject protocol
-    (satisfies? RubyObject obj)
-    (ruby-class obj)
     :else ::method-not-found))
 
 (defn interpret-literal
@@ -766,10 +767,38 @@
     (try
       (apply ruby-classes/invoke-ruby-method receiver (keyword method-name) args)
       (catch Exception e
-        (if (re-find #"NoMethodError" (.getMessage e))
-          ::method-not-found
-          (throw e))))
+        ;; Check if this is a NoMethodError (either ruby-exception or ExceptionInfo from method registry)
+        (let [ex-data (ex-data e)
+              msg (.getMessage e)]
+          (if (or
+                ;; Ruby exception with NoMethodError class
+                (and (= (:type ex-data) :ruby-exception)
+                     (= (get-in ex-data [:exception :exception-class]) "NoMethodError"))
+                ;; ExceptionInfo from method registry with NoMethodError message
+                (and msg (re-find #"NoMethodError.*undefined method" msg)))
+            ::method-not-found
+            (throw e)))))
     ::method-not-found))
+
+(defn try-primitive-class-method
+  "Try to find user-defined methods on primitive types (Integer, String, etc)."
+  [receiver method-name args variables ast]
+  (let [class-name (ruby-class-name receiver)
+        class-info (get @variables class-name)]
+    (if (and class-info (:methods class-info))
+      (let [methods @(:methods class-info)
+            method-info (get methods method-name)]
+        (if method-info
+          ;; Found a user-defined method, execute it
+          (let [method-params (:parameters method-info)
+                method-body (:body method-info)
+                method-ast (or (:ast method-info) ast)
+                local-vars (atom (merge @variables
+                                        {"self" receiver}
+                                        (zipmap method-params args)))]
+            (interpret-expression method-ast method-body local-vars))
+          ::method-not-found))
+      ::method-not-found)))
 
 (defn try-builtin-instance-method
   "Try to execute a built-in instance method, return ::method-not-found sentinel if method not found."
@@ -858,6 +887,64 @@
              (+ receiver (first args))
              ::method-not-found)
     "double" (if (number? receiver) (* receiver 2) ::method-not-found)
+    ;; Operator methods for numbers (Ruby style: 10 < 5 is actually 10.<(5))
+    "<" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+          (< receiver (first args))
+          ::method-not-found)
+    ">" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+          (> receiver (first args))
+          ::method-not-found)
+    "<=" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+           (<= receiver (first args))
+           ::method-not-found)
+    ">=" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+           (>= receiver (first args))
+           ::method-not-found)
+    "==" (cond
+           (and (number? receiver) (= 1 (count args))) (= receiver (first args))
+           (and (nil? receiver) (= 1 (count args))) (nil? (first args))
+           (and (string? receiver) (= 1 (count args))) (= receiver (first args))
+           (and (= (type receiver) sri.ruby_string.RubyString) (= 1 (count args)))
+           (ruby-classes/invoke-ruby-method receiver :== (first args))
+           ;; User-defined class instances - identity comparison by default
+           (and (map? receiver) (:class-info receiver) (= 1 (count args)))
+           (= receiver (first args))
+           :else ::method-not-found)
+    "!=" (cond
+           (and (number? receiver) (= 1 (count args))) (not= receiver (first args))
+           (and (nil? receiver) (= 1 (count args))) (not (nil? (first args)))
+           (and (string? receiver) (= 1 (count args))) (not= receiver (first args))
+           (and (= (type receiver) sri.ruby_string.RubyString) (= 1 (count args)))
+           (ruby-classes/invoke-ruby-method receiver :!= (first args))
+           ;; User-defined class instances - identity comparison by default
+           (and (map? receiver) (:class-info receiver) (= 1 (count args)))
+           (not= receiver (first args))
+           :else ::method-not-found)
+    "+" (cond
+          (and (number? receiver) (= 1 (count args)) (number? (first args)))
+          (+' receiver (first args))
+          ;; String concatenation
+          (and (string? receiver) (= 1 (count args)))
+          (str receiver (if (= (type (first args)) sri.ruby_string.RubyString)
+                          (ruby-classes/invoke-ruby-method (first args) :to_s)
+                          (first args)))
+          (and (= (type receiver) sri.ruby_string.RubyString) (= 1 (count args)))
+          (ruby-classes/invoke-ruby-method receiver :+ (first args))
+          :else ::method-not-found)
+    "-" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+          (-' receiver (first args))
+          ::method-not-found)
+    "*" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+          (*' receiver (first args))
+          ::method-not-found)
+    "/" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+          (if (and (integer? receiver) (integer? (first args)))
+            (quot receiver (first args))
+            (/ receiver (first args)))
+          ::method-not-found)
+    "%" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
+          (rem receiver (first args))
+          ::method-not-found)
     "empty?" (cond
                (ruby-classes/ruby-array? receiver) (empty? @(:data receiver))
                (vector? receiver) (empty? receiver)
@@ -976,11 +1063,14 @@
                             (try-block-method receiver method-name ast entity-id variables))
               ruby-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result))
                            (try-ruby-object-method receiver method-name args))
+              primitive-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
+                                         (= ruby-result ::method-not-found))
+                                (try-primitive-class-method receiver method-name args variables ast))
               builtin-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
-                                       (= ruby-result ::method-not-found))
+                                       (= ruby-result ::method-not-found) (= primitive-result ::method-not-found))
                               (try-builtin-instance-method receiver method-name args))
               new-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
-                                   (= ruby-result ::method-not-found) (= builtin-result ::method-not-found)
+                                   (= ruby-result ::method-not-found) (= primitive-result ::method-not-found) (= builtin-result ::method-not-found)
                                    (= method-name "new"))
                           (try-class-instantiation receiver args variables ast))]
           (cond
@@ -991,6 +1081,8 @@
             block-result block-result
             ;; Handle Ruby object methods - check for sentinel
             (not= ruby-result ::method-not-found) ruby-result
+            ;; Handle primitive class methods - check for sentinel
+            (not= primitive-result ::method-not-found) primitive-result
             ;; Handle builtin methods - check for sentinel
             (not= builtin-result ::method-not-found) builtin-result
             new-result new-result
@@ -1637,6 +1729,46 @@
       ;; Return module object (Ruby modules are objects)
       module-info)))
 
+(defn add-method-to-class
+  "Helper to add a method definition to a class methods atom."
+  [methods-atom ast method-id]
+  (let [method-name (parser/get-component ast method-id :name)
+        method-params (parser/get-component ast method-id :parameters)
+        method-body (parser/get-component ast method-id :body)]
+    (swap! methods-atom assoc method-name
+           {:name method-name
+            :parameters method-params
+            :body method-body
+            :ast ast})))
+
+(defn add-attr-getter
+  "Helper to add an attribute getter method."
+  [methods-atom attr-name]
+  (swap! methods-atom assoc attr-name
+         {:name attr-name
+          :parameters []
+          :attr-getter true
+          :attr-name attr-name}))
+
+(defn add-attr-setter
+  "Helper to add an attribute setter method."
+  [methods-atom attr-name]
+  (swap! methods-atom assoc (str attr-name "=")
+         {:name (str attr-name "=")
+          :parameters ["value"]
+          :attr-setter true
+          :attr-name attr-name}))
+
+(defn process-attr-statement
+  "Process attr_accessor, attr_reader, or attr_writer statements."
+  [method-type methods-atom ast method-id]
+  (let [attributes (parser/get-component ast method-id :attributes)]
+    (doseq [attr-name attributes]
+      (when (#{:attr-accessor-statement :attr-reader-statement} method-type)
+        (add-attr-getter methods-atom attr-name))
+      (when (#{:attr-accessor-statement :attr-writer-statement} method-type)
+        (add-attr-setter methods-atom attr-name)))))
+
 (defn interpret-class-definition
   "Interpret a class definition - stores class info in variables for later instantiation."
   ([ast entity-id variables]
@@ -1644,95 +1776,49 @@
   ([ast entity-id variables opts]
    (let [class-name (parser/get-component ast entity-id :name)
          parent-class (parser/get-component ast entity-id :parent-class)
-         body-id (parser/get-component ast entity-id :body)]
+         body-id (parser/get-component ast entity-id :body)
+         existing-class (get @variables class-name)
+           class-methods (if existing-class
+                          (:methods existing-class)
+                          (atom {}))
+           class-class-methods (if existing-class
+                                (:class-methods existing-class)
+                                (atom {}))
+           class-info (if existing-class
+                       (assoc existing-class
+                              :ast ast
+                              :body-id body-id)
+                       {:name class-name
+                        :parent-class parent-class
+                        :methods class-methods
+                        :class-methods class-class-methods
+                        :ast ast
+                        :body-id body-id})]
+     ;; Check if class already exists (for open classes / class reopening)
+     (when body-id
+       (let [method-statements (parser/get-children ast body-id)]
+         (doseq [method-id method-statements]
+           (let [method-type (parser/get-node-type ast method-id)]
+             (cond
+               (= method-type :method-definition)
+               (add-method-to-class class-methods ast method-id)
 
-     ;; Create class object with instance methods and class methods
-     (let [class-methods (atom {})
-           class-class-methods (atom {})
-           class-info {:name class-name
-                       :parent-class parent-class
-                       :methods class-methods
-                       :class-methods class-class-methods
-                       :ast ast
-                       :body-id body-id}]
+               (= method-type :class-method-definition)
+               (add-method-to-class class-class-methods ast method-id)
 
-      ;; Process class body to extract method definitions
-      (when body-id
-        (let [method-statements (parser/get-children ast body-id)]
-          (doseq [method-id method-statements]
-            (let [method-type (parser/get-node-type ast method-id)]
-              (cond
-                ;; Instance methods (def method_name)
-                (= method-type :method-definition)
-                (let [method-name (parser/get-component ast method-id :name)
-                      method-params (parser/get-component ast method-id :parameters)
-                      method-body (parser/get-component ast method-id :body)]
-                  (swap! class-methods assoc method-name
-                         {:name method-name
-                          :parameters method-params
-                          :body method-body
-                          :ast ast}))
+               (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
+               (process-attr-statement method-type class-methods ast method-id)
 
-                ;; Class methods (def self.method_name)
-                (= method-type :class-method-definition)
-                (let [method-name (parser/get-component ast method-id :name)
-                      method-params (parser/get-component ast method-id :parameters)
-                      method-body (parser/get-component ast method-id :body)]
-                  (swap! class-class-methods assoc method-name
-                         {:name method-name
-                          :parameters method-params
-                          :body method-body
-                          :ast ast}))
+               ;; Skip any other statements during class definition
+               :else nil)))))
 
-                ;; Handle attr statements - generate getter/setter methods
-                (= method-type :attr-accessor-statement)
-                (let [attributes (parser/get-component ast method-id :attributes)]
-                  (doseq [attr-name attributes]
-                    ;; Generate getter method
-                    (swap! class-methods assoc attr-name
-                           {:name attr-name
-                            :parameters []
-                            :attr-getter true
-                            :attr-name attr-name})
-                    ;; Generate setter method
-                    (swap! class-methods assoc (str attr-name "=")
-                           {:name (str attr-name "=")
-                            :parameters ["value"]
-                            :attr-setter true
-                            :attr-name attr-name})))
+     ;; Store class in variables with "class:" prefix
+     (swap! variables assoc (str "class:" class-name) class-info)
 
-                (= method-type :attr-reader-statement)
-                (let [attributes (parser/get-component ast method-id :attributes)]
-                  (doseq [attr-name attributes]
-                    ;; Generate only getter method
-                    (swap! class-methods assoc attr-name
-                           {:name attr-name
-                            :parameters []
-                            :attr-getter true
-                            :attr-name attr-name})))
+     ;; Also make class name available for Class.new syntax
+     (swap! variables assoc class-name class-info)
 
-                (= method-type :attr-writer-statement)
-                (let [attributes (parser/get-component ast method-id :attributes)]
-                  (doseq [attr-name attributes]
-                    ;; Generate only setter method
-                    (swap! class-methods assoc (str attr-name "=")
-                           {:name (str attr-name "=")
-                            :parameters ["value"]
-                            :attr-setter true
-                            :attr-name attr-name})))
-
-                ;; Skip any other statements during class definition
-                :else
-                nil))) ; Skip all other statement types during class definition
-
-
-       ;; Store class in variables with "class:" prefix
-       (swap! variables assoc (str "class:" class-name) class-info)
-
-       ;; Also make class name available for Class.new syntax
-       (swap! variables assoc class-name class-info)
-
-       nil))))))
+     nil)))
 
 (defn interpret-instance-variable-access
   "Interpret instance variable access (@var)."
@@ -1803,6 +1889,7 @@
        :interpolated-string (interpret-interpolated-string ast entity-id variables)
        :boolean-literal (interpret-literal ast entity-id)
        :nil-literal (interpret-literal ast entity-id)
+       :self-literal (get @variables "self")
        :symbol-literal (interpret-literal ast entity-id)
        :word-array-literal (interpret-word-array-literal ast entity-id variables)
        :array-literal (interpret-array-literal ast entity-id variables)
@@ -1866,6 +1953,7 @@
        :interpolated-string (interpret-interpolated-string ast entity-id variables)
        :boolean-literal (interpret-literal ast entity-id)
        :nil-literal (interpret-literal ast entity-id)
+       :self-literal (get @variables "self")
        :symbol-literal (interpret-literal ast entity-id)
        :word-array-literal (interpret-word-array-literal ast entity-id variables)
        :array-literal (interpret-array-literal ast entity-id variables)
@@ -1919,22 +2007,27 @@
   []
   {"Integer" {:name "Integer"
               :builtin true
+              :methods (atom {})  ; Allow extending Integer with new methods
               :class-methods {"max" {:builtin-class-method true :name "max"}
                               "sqrt" {:builtin-class-method true :name "sqrt"}}}
    "Object" {:name "Object"
              :builtin true
              :ruby-class true  ; Mark as new Ruby class
+             :methods (atom {})
              :class-methods {"new" {:ruby-class-method true :name "new"}}}
    "String" {:name "String"
              :builtin true
              :ruby-class true  ; Mark as new Ruby class
+             :methods (atom {})
              :class-methods {"new" {:ruby-class-method true :name "new"}}}
    "Module" {:name "Module"
              :builtin true
              :ruby-class true
+             :methods (atom {})
              :class-methods {"new" {:ruby-class-method true :name "new"}}}
    "Range" {:name "Range"
             :builtin true
+            :methods (atom {})
             :ruby-class true
             :class-methods {"new" {:ruby-class-method true :name "new"}}}})
 

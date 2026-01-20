@@ -62,18 +62,43 @@ end
 # Example usage
 # --------------------------
 
-describe("Testing blocks") do
-  it("passes when values are equal") do
-    expect(10).to(eq(10))
+# describe("Testing blocks") do
+#   it("passes when values are equal") do
+#     expect(10).to(eq(10))
+#   end
+
+#   it("fails when values are different") do
+#     expect(10).to(eq(10))
+#   end
+
+#   it("plus math") do
+#     x = 5 + 1
+#     expect(x).to(eq(10))
+#   end
+# end
+
+class ShouldExpectation
+  def initialize(actual)
+    @actual = actual
   end
 
-  it("fails when values are different") do
-    expect(10).to(eq(10))
+  def ==(expected)
+    if @actual != expected
+      raise("expected #{expected.inspect} but got #{@actual.inspect}")
+    end
+    true
   end
+end
 
-  it("plus math") do
-    x = 5 + 1
-    expect(x).to(eq(10))
+class Integer
+  def should
+    ShouldExpectation.new(self)
+  end
+end
+
+describe("A number literal") do
+  it("can be a sequence of decimal digits") do
+    435.should == 435
   end
 end
 
