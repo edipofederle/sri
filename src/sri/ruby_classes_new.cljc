@@ -655,6 +655,20 @@
      (create-syntax-error \"unexpected end-of-input\")"
   ruby-exception/create-syntax-error)
 
+(def create-load-error
+  "Creates a LoadError exception (raised when a file cannot be loaded).
+
+   Args:
+     message: Error message describing what file couldn't be loaded
+     backtrace (optional): Stack trace as a vector of strings
+     cause (optional): Exception that caused this one
+
+   Returns: A new RubyException instance with LoadError class
+
+   Example:
+     (create-load-error \"cannot load such file -- missing.rb\")"
+  ruby-exception/create-load-error)
+
 (def ruby-exception?
   "Checks if the given object is a Ruby exception.
 

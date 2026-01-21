@@ -800,6 +800,29 @@
           ::method-not-found))
       ::method-not-found)))
 
+;; Helper functions for operator methods
+(defn- single-arg?
+  "Returns true if args has exactly one element."
+  [args]
+  (= 1 (count args)))
+
+(defn- numeric-binary-op
+  "Applies op to receiver and single arg if both are numbers, returns ::method-not-found otherwise."
+  [receiver args op]
+  (if (and (single-arg? args) (number? receiver) (number? (first args)))
+    (op receiver (first args))
+    ::method-not-found))
+
+(defn- ruby-string?
+  "Check if value is a RubyString instance."
+  [value]
+  (= (type value) sri.ruby_string.RubyString))
+
+(defn- user-defined-instance?
+  "Check if value is a user-defined class instance."
+  [value]
+  (and (map? value) (:class-info value)))
+
 (defn try-builtin-instance-method
   "Try to execute a built-in instance method, return ::method-not-found sentinel if method not found."
   [receiver method-name args]
@@ -883,68 +906,54 @@
               receiver
               ::method-not-found)
     "inc" (if (number? receiver) (+ receiver 1) ::method-not-found)
-    "incn" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-             (+ receiver (first args))
-             ::method-not-found)
+    "incn" (numeric-binary-op receiver args +)
     "double" (if (number? receiver) (* receiver 2) ::method-not-found)
     ;; Operator methods for numbers (Ruby style: 10 < 5 is actually 10.<(5))
-    "<" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-          (< receiver (first args))
-          ::method-not-found)
-    ">" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-          (> receiver (first args))
-          ::method-not-found)
-    "<=" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-           (<= receiver (first args))
+    "<" (numeric-binary-op receiver args <)
+    ">" (numeric-binary-op receiver args >)
+    "<=" (numeric-binary-op receiver args <=)
+    ">=" (numeric-binary-op receiver args >=)
+    "==" (if (single-arg? args)
+           (let [arg (first args)]
+             (cond
+               (number? receiver) (= receiver arg)
+               (nil? receiver) (nil? arg)
+               (string? receiver) (= receiver arg)
+               (ruby-string? receiver) (ruby-classes/invoke-ruby-method receiver :== arg)
+               (user-defined-instance? receiver) (= receiver arg)
+               :else ::method-not-found))
            ::method-not-found)
-    ">=" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-           (>= receiver (first args))
+    "!=" (if (single-arg? args)
+           (let [arg (first args)]
+             (cond
+               (number? receiver) (not= receiver arg)
+               (nil? receiver) (not (nil? arg))
+               (string? receiver) (not= receiver arg)
+               (ruby-string? receiver) (ruby-classes/invoke-ruby-method receiver :!= arg)
+               (user-defined-instance? receiver) (not= receiver arg)
+               :else ::method-not-found))
            ::method-not-found)
-    "==" (cond
-           (and (number? receiver) (= 1 (count args))) (= receiver (first args))
-           (and (nil? receiver) (= 1 (count args))) (nil? (first args))
-           (and (string? receiver) (= 1 (count args))) (= receiver (first args))
-           (and (= (type receiver) sri.ruby_string.RubyString) (= 1 (count args)))
-           (ruby-classes/invoke-ruby-method receiver :== (first args))
-           ;; User-defined class instances - identity comparison by default
-           (and (map? receiver) (:class-info receiver) (= 1 (count args)))
-           (= receiver (first args))
-           :else ::method-not-found)
-    "!=" (cond
-           (and (number? receiver) (= 1 (count args))) (not= receiver (first args))
-           (and (nil? receiver) (= 1 (count args))) (not (nil? (first args)))
-           (and (string? receiver) (= 1 (count args))) (not= receiver (first args))
-           (and (= (type receiver) sri.ruby_string.RubyString) (= 1 (count args)))
-           (ruby-classes/invoke-ruby-method receiver :!= (first args))
-           ;; User-defined class instances - identity comparison by default
-           (and (map? receiver) (:class-info receiver) (= 1 (count args)))
-           (not= receiver (first args))
-           :else ::method-not-found)
-    "+" (cond
-          (and (number? receiver) (= 1 (count args)) (number? (first args)))
-          (+' receiver (first args))
-          ;; String concatenation
-          (and (string? receiver) (= 1 (count args)))
-          (str receiver (if (= (type (first args)) sri.ruby_string.RubyString)
-                          (ruby-classes/invoke-ruby-method (first args) :to_s)
-                          (first args)))
-          (and (= (type receiver) sri.ruby_string.RubyString) (= 1 (count args)))
-          (ruby-classes/invoke-ruby-method receiver :+ (first args))
-          :else ::method-not-found)
-    "-" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-          (-' receiver (first args))
+    "+" (if (single-arg? args)
+          (let [arg (first args)]
+            (cond
+              (and (number? receiver) (number? arg)) (+' receiver arg)
+              (string? receiver) (str receiver (if (ruby-string? arg)
+                                                 (ruby-classes/invoke-ruby-method arg :to_s)
+                                                 arg))
+              (ruby-string? receiver) (ruby-classes/invoke-ruby-method receiver :+ arg)
+              :else ::method-not-found))
           ::method-not-found)
-    "*" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-          (*' receiver (first args))
+    "-" (numeric-binary-op receiver args -')
+    "*" (numeric-binary-op receiver args *')
+    "/" (if (single-arg? args)
+          (let [arg (first args)]
+            (if (and (number? receiver) (number? arg))
+              (if (and (integer? receiver) (integer? arg))
+                (quot receiver arg)
+                (/ receiver arg))
+              ::method-not-found))
           ::method-not-found)
-    "/" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-          (if (and (integer? receiver) (integer? (first args)))
-            (quot receiver (first args))
-            (/ receiver (first args)))
-          ::method-not-found)
-    "%" (if (and (number? receiver) (= 1 (count args)) (number? (first args)))
-          (rem receiver (first args))
-          ::method-not-found)
+    "%" (numeric-binary-op receiver args rem)
     "empty?" (cond
                (ruby-classes/ruby-array? receiver) (empty? @(:data receiver))
                (vector? receiver) (empty? receiver)
@@ -1117,6 +1126,35 @@
                                         (str "no implicit conversion of " (type code-str) " into String"))]
                          (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
 
+        "load" (if-let [filename (first args)]
+                 (let [filename-str (cond
+                                      (string? filename) filename
+                                      (satisfies? ruby-classes/RubyInspectable filename) (to-s filename)
+                                      :else (str filename))]
+                   (try
+                     (let [source (slurp filename-str)
+                           load-ast (parser/parse (tokenizer/tokenize source))
+                           load-root-id (parser/find-root-entity load-ast)
+                           statement-ids (when (= :program (parser/get-node-type load-ast load-root-id))
+                                           (parser/get-children load-ast load-root-id))]
+                       ;; Execute with shared variables but use loaded file's AST for proper block handling
+                       (if statement-ids
+                         (run! #(interpret-expression load-ast % variables) statement-ids)
+                         (interpret-expression load-ast load-root-id variables))
+                       true)
+                     (catch java.io.FileNotFoundException _
+                       (throw (ex-info "ruby-exception"
+                                       {:type :ruby-exception
+                                        :exception (ruby-classes/create-load-error
+                                                    (str "cannot load such file -- " filename-str))})))
+                     (catch Exception e
+                       (throw (ex-info (str "load error: " (.getMessage e))
+                                       {:filename filename-str :original-error e})))))
+                 (throw (ex-info "ruby-exception"
+                                 {:type :ruby-exception
+                                  :exception (ruby-classes/create-argument-error
+                                              "wrong number of arguments (given 0, expected 1)")})))
+
         "Rational" (let [num (or (first args) 0)
                            den (or (second args) 1)]
                        (ruby-classes/create-rational num den))
@@ -1166,16 +1204,16 @@
 
 (defn interpret-user-method
   "Interpret a call to user-defined method."
-  [ast entity-id variables method-def args]
+  [caller-ast entity-id variables method-def args]
   (let [{:keys [params body-id ast]} method-def
         method-ast ast ; Use the AST from the method definition record
         local-vars (bind-method-parameters variables params args)
-        ;; Check if this method call has a block attached
-        block-id (parser/get-component ast entity-id :block)]
+        ;; Check if this method call has a block attached (in the CALLER's AST)
+        block-id (parser/get-component caller-ast entity-id :block)]
     ;; Store block context in local variables if a block is provided
     (when block-id
       (swap! local-vars assoc "__block_id" block-id)
-      (swap! local-vars assoc "__block_ast" ast))
+      (swap! local-vars assoc "__block_ast" caller-ast))
     ;; Execute method body with return handling
     (execute-with-return-handling method-ast body-id local-vars)))
 

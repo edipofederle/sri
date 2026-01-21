@@ -144,26 +144,26 @@
   #{"==" "!=" "<" ">" "<=" ">=" "<=>" "===" "+" "-" "*" "/" "%" "**"
     "&" "|" "^" "~" "<<" ">>" "+@" "-@" "[]" "[]="})
 
+(defn- valid-operator-method-name?
+  "Check if token is an operator that can be used as a method name."
+  [token]
+  (and token (operator-method-names (:value token))))
+
 (defn expect-method-name
   "Consume an identifier or operator token as a method name."
   [state]
   (let [token (current-token state)]
-    (cond
-      (match-token? state :identifier)
+    (if (or (match-token? state :identifier)
+            (and (match-token? state :operator)
+                 (valid-operator-method-name? token)))
       (consume-token state)
-
-      (and (match-token? state :operator)
-           (contains? operator-method-names (:value token)))
-      (consume-token state)
-
-      :else
       (throw (ex-info (str "Expected method name (identifier or operator), got "
-                          (if token
-                            (str (:type token) " '" (:value token) "'")
-                            "EOF"))
-                     {:expected "method name"
-                      :actual-token token
-                      :position (when token {:line (:line token) :column (:column token)})})))))
+                           (if token
+                             (str (:type token) " '" (:value token) "'")
+                             "EOF"))
+                      {:expected "method name"
+                       :actual-token token
+                       :position (some-> token (select-keys [:line :column]))})))))
 
 (defn parse-integer-literal
   "Parse an integer literal."
@@ -915,6 +915,10 @@
    "+" 7 "-" 7 "<<" 7
    "*" 8 "/" 8 "%" 8})
 
+(def ^:private ruby-method-operators
+  "Operators that are parsed as method calls in Ruby (e.g., a + b becomes a.+(b))."
+  #{"==" "!=" "<" ">" "<=" ">=" "<=>" "===" "+" "-" "*" "/" "%" "**" "<<" ">>"})
+
 (defn get-precedence
   "Get the precedence of an operator, or 0 if not found."
   [op]
@@ -967,30 +971,29 @@
                   [state-after-right right-id])
                 [state-after-right right-id])
 
-              ;; Create the appropriate node type
-              ;; Operators that are method calls in Ruby
-              method-operators #{"==" "!=" "<" ">" "<=" ">=" "<=>" "===" "+" "-" "*" "/" "%" "**" "<<" ">>"}
+              ;; Create the appropriate node type based on operator
+              pos {:line (:line token) :column (:column token)}
               [new-ast new-left-id] (cond
                                       ;; Endless range
-                                      (and (contains? #{".." "..."} operator) (nil? final-right-id))
+                                      (and (#{".." "..."} operator) (nil? final-right-id))
                                       (create-node (:ast final-state) :endless-range
-                                                 :start left-id
-                                                 :inclusive? (= operator "..")
-                                                 :position {:line (:line token) :column (:column token)})
+                                                   :start left-id
+                                                   :inclusive? (= operator "..")
+                                                   :position pos)
                                       ;; Operator as method call (Ruby style: a == b -> a.==(b))
-                                      (contains? method-operators operator)
+                                      (ruby-method-operators operator)
                                       (create-node (:ast final-state) :method-call
-                                                 :receiver left-id
-                                                 :method operator
-                                                 :arguments [final-right-id]
-                                                 :position {:line (:line token) :column (:column token)})
+                                                   :receiver left-id
+                                                   :method operator
+                                                   :arguments [final-right-id]
+                                                   :position pos)
                                       ;; Regular binary operation (assignment, ranges, logical operators)
                                       :else
                                       (create-node (:ast final-state) :binary-operation
-                                                 :operator operator
-                                                 :left left-id
-                                                 :right final-right-id
-                                                 :position {:line (:line token) :column (:column token)}))
+                                                   :operator operator
+                                                   :left left-id
+                                                   :right final-right-id
+                                                   :position pos))
               new-state (assoc final-state :ast new-ast)]
           (recur new-state new-left-id))
         [current-state left-id]))))

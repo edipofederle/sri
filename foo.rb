@@ -1,8 +1,4 @@
-module Foo
-  def self.hello
-    10
-  end
+class Foo
+def ==(expected)
 end
-
-puts(Foo.hello)
-puts("__END__")
+end

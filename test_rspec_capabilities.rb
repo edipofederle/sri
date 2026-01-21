@@ -96,10 +96,16 @@ class Integer
   end
 end
 
-describe("A number literal") do
-  it("can be a sequence of decimal digits") do
-    435.should == 435
-  end
+# --------------------------
+# Load test file from ARGV
+# --------------------------
+
+if ARGV.length > 0
+  test_file = ARGV[0]
+  load(test_file)
+else
+  puts("Usage: lein run test_rspec_capabilities.rb <test_file.rb>")
+  puts("No test file provided.")
 end
 
 puts("")

@@ -125,6 +125,12 @@
   ([message backtrace] (create-exception message backtrace nil "SyntaxError"))
   ([message backtrace cause] (create-exception message backtrace cause "SyntaxError")))
 
+(defn create-load-error
+  "Create a LoadError."
+  ([message] (create-exception message [] nil "LoadError"))
+  ([message backtrace] (create-exception message backtrace nil "LoadError"))
+  ([message backtrace cause] (create-exception message backtrace cause "LoadError")))
+
 ;; =============================================================================
 ;; Exception Method Implementations
 ;; =============================================================================

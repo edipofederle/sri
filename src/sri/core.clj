@@ -5,17 +5,22 @@
   (:gen-class))
 
 (defn evaluate
-  "Internal evaluation function for Ruby source code."
-  [source]
-  (try
-    (let [ast (p/parse (t/tokenize source))
-          root-entity (p/find-root-entity ast)]
-      (i/evaluate-directly ast root-entity {})
-      0)
-    (catch clojure.lang.ExceptionInfo e
-      (println "Error:" (.getMessage e))
-      (.printStackTrace e)
-      1)))
+  "Internal evaluation function for Ruby source code.
+   argv is a vector of command-line arguments passed to the Ruby program."
+  ([source]
+   (evaluate source []))
+  ([source argv]
+   (try
+     (let [ast (p/parse (t/tokenize source))
+           root-entity (p/find-root-entity ast)
+           ;; Create ARGV as a Ruby array
+           argv-array (apply sri.ruby-classes-new/create-array argv)]
+       (i/evaluate-directly ast root-entity {:namespaces {"ARGV" argv-array}})
+       0)
+     (catch clojure.lang.ExceptionInfo e
+       (println "Error:" (.getMessage e))
+       (.printStackTrace e)
+       1))))
 
 (defn eval-string
   "Evaluate a Ruby string and return the result.
@@ -49,15 +54,17 @@
 
 (defn -main
   "Main entry point for command-line file execution.
-   For library usage, use eval-string instead."
+   For library usage, use eval-string instead.
+   Arguments after the filename are passed to the Ruby program as ARGV."
   [& args]
   (if (seq args)
-    (let [filename (first args)]
+    (let [filename (first args)
+          ruby-argv (rest args)]  ; Remaining args become ARGV
       (if (= "-e" (first args))
         (eval-string (last args))
         (try
           (let [source (slurp filename)
-                exit-code (evaluate source)]
+                exit-code (evaluate source ruby-argv)]
             (System/exit exit-code))
           (catch java.io.FileNotFoundException _
             (println "Error: File not found:" filename)
