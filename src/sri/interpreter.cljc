@@ -11,7 +11,7 @@
             [sri.ruby-method-registry :refer [method-lookup]]))
 
 
-(declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program interpret-block)
+(declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program interpret-block call-lambda)
 
 ;; Global variables store
 (defonce global-variables (atom {}))
@@ -101,6 +101,14 @@
     (map? obj) "Hash"     ; Legacy support
     :else ::method-not-found))
 
+(defn ruby-class-object
+  "Get the Ruby class object for an object (for use with .class method).
+   Returns a map with :name that can respond to .name method."
+  [obj]
+  (let [class-name (ruby-class-name obj)]
+    (when (and class-name (not= class-name ::method-not-found))
+      {:name class-name :builtin true})))
+
 (defn interpret-literal
   "Interpret a literal value node."
   [ast entity-id]
@@ -143,8 +151,13 @@
                                         temp-state (parser/create-parse-state expr-tokens)
                                         [final-state expr-id] (parser/parse-expression temp-state)
                                         result (interpret-expression (:ast final-state) expr-id variables)]
-                                    (if (satisfies? RubyInspectable result)
+                                    (cond
+                                      (satisfies? RubyInspectable result)
                                       (to-s result)
+                                      ;; Class objects (maps with :name and :builtin) should show just the name
+                                      (and (map? result) (:name result) (:builtin result))
+                                      (:name result)
+                                      :else
                                       (str result)))
 
                                   ;; Unknown part type
@@ -466,10 +479,14 @@
                 (let [left-str (cond
                                  (string? left-val) left-val
                                  (satisfies? ruby-classes/RubyObject left-val) (to-s left-val)
+                                 ;; Class objects (maps with :name and :builtin) should show just the name
+                                 (and (map? left-val) (:name left-val) (:builtin left-val)) (:name left-val)
                                  :else (str left-val))
                       right-str (cond
                                   (string? right-val) right-val
                                   (satisfies? ruby-classes/RubyObject right-val) (to-s right-val)
+                                  ;; Class objects (maps with :name and :builtin) should show just the name
+                                  (and (map? right-val) (:name right-val) (:builtin right-val)) (:name right-val)
                                   :else (str right-val))]
                   (str left-str right-str))
                 ;; Numeric addition with arbitrary precision
@@ -661,6 +678,10 @@
   "Try to execute a class method call, return ::method-not-found if method not found."
   [receiver method-name args variables ast]
   (cond
+    ;; Handle .name method for any class/module object
+    (and (map? receiver) (:name receiver) (= method-name "name"))
+    (:name receiver)
+
     ;; Handle classes with class-methods
     (and (map? receiver) (:name receiver) (:class-methods receiver))
     (let [class-methods (if (instance? clojure.lang.Atom (:class-methods receiver))
@@ -1007,7 +1028,7 @@
     "id2name" (if (keyword? receiver)
                 (name receiver)         ; Same as to_s for symbols
                 ::method-not-found)
-    "class" (ruby-class-name receiver)
+    "class" (ruby-class-object receiver)
     ;; Range methods (each is handled by enumerable module)
     "to_a" (if (ruby-classes/ruby-range? receiver)
              (ruby-classes/invoke-ruby-method receiver :to_a)
@@ -1064,8 +1085,37 @@
     (if receiver-id
       ;; Method call on object: obj.method(args)
       (let [receiver (interpret-expression ast receiver-id variables)]
-        ;; Try different method resolution strategies
-        (let [class-result (try-class-method-call receiver method-name args variables ast)
+        ;; Check if receiver is a lambda/proc
+        (if (and (map? receiver) (= (:type receiver) :lambda))
+          (cond
+            ;; Built-in call method
+            (= method-name "call")
+            (call-lambda receiver args)
+            ;; Look up method in Proc class (if defined by user)
+            :else
+            (if-let [proc-class (get @variables "Proc")]
+              (if-let [method-info (get @(:methods proc-class) method-name)]
+                ;; Execute Proc method with lambda as self
+                (let [method-params (:parameters method-info)
+                      method-body-id (:body method-info)  ;; Single entity ID, not a list
+                      method-ast (:ast method-info)
+                      method-vars (atom (assoc @variables "self" receiver))]
+                  ;; Bind method parameters to arguments
+                  (when (and method-params (seq args))
+                    (doseq [[param arg] (map vector method-params args)]
+                      (swap! method-vars assoc param arg)))
+                  ;; Execute method body with return handling (like interpret-user-method)
+                  (execute-with-return-handling method-ast method-body-id method-vars))
+                ;; No method found on Proc class
+                (let [exception (ruby-classes/create-no-method-error
+                                 (str "undefined method `" method-name "` for Proc"))]
+                  (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
+              ;; No Proc class defined
+              (let [exception (ruby-classes/create-no-method-error
+                               (str "undefined method `" method-name "` for Proc"))]
+                (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
+          ;; Try different method resolution strategies
+          (let [class-result (try-class-method-call receiver method-name args variables ast)
               instance-result (when (= class-result ::method-not-found)
                                (try-instance-method-call receiver method-name args variables ast))
               block-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found))
@@ -1098,7 +1148,7 @@
             ;; No method found
             :else (let [exception (ruby-classes/create-no-method-error
                                    (str "undefined method `" method-name "` for " (type receiver)))]
-                    (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
+                    (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))))
 
       ;; Function call: method(args)
       (case method-name
@@ -1110,8 +1160,12 @@
                    (let [exception (ruby-classes/create-argument-error
                                     "wrong number of arguments (given 0, expected 1)")]
                      (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
-                   (let [code-str (first args)]
-                     (if (string? code-str)
+                   (let [arg (first args)
+                         code-str (cond
+                                    (string? arg) arg
+                                    (satisfies? RubyInspectable arg) (to-s arg)
+                                    :else nil)]
+                     (if code-str
                        ;; Parse and evaluate the Ruby code string
                        (try
                          (let [tokens (tokenizer/tokenize code-str)
@@ -1119,11 +1173,17 @@
                                eval-root-id (parser/find-root-entity eval-ast)]
                            ;; Execute the parsed AST - note: this creates a new variable scope
                            (interpret-program eval-ast eval-root-id {}))
+                         (catch clojure.lang.ExceptionInfo e
+                           ;; Re-throw Ruby exceptions as-is so rescue can catch them
+                           (if (= (:type (ex-data e)) :ruby-exception)
+                             (throw e)
+                             (throw (ex-info (str "eval error: " (.getMessage e))
+                                            {:code code-str :original-error e}))))
                          (catch Exception e
                            (throw (ex-info (str "eval error: " (.getMessage e))
                                           {:code code-str :original-error e}))))
                        (let [exception (ruby-classes/create-type-error
-                                        (str "no implicit conversion of " (type code-str) " into String"))]
+                                        (str "no implicit conversion of " (type arg) " into String"))]
                          (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
 
         "load" (if-let [filename (first args)]
@@ -1912,6 +1972,31 @@
         (last results)) ; Return the last expression result
       nil)))
 
+(defn interpret-lambda
+  "Interpret a lambda expression - creates a callable proc object."
+  [ast entity-id variables]
+  (let [params (parser/get-component ast entity-id :params)
+        body-ids (parser/get-component ast entity-id :body)]
+    ;; Return a lambda object that captures the AST, body, params, and closure
+    {:type :lambda
+     :params (or params [])
+     :body body-ids
+     :ast ast
+     :closure @variables}))
+
+(defn call-lambda
+  "Execute a lambda with given arguments."
+  [lambda args]
+  (let [{:keys [params body ast closure]} lambda
+        ;; Create new variable scope with closure and bound parameters
+        lambda-vars (atom closure)]
+    ;; Bind parameters to arguments
+    (doseq [[param arg] (map vector params args)]
+      (swap! lambda-vars assoc param arg))
+    ;; Execute body statements
+    (let [results (mapv #(interpret-expression ast % lambda-vars) body)]
+      (last results))))
+
 (defn interpret-expression
   "Main expression interpreter dispatcher."
   ([ast entity-id]
@@ -1967,6 +2052,7 @@
        :next-statement (interpret-next-statement ast entity-id variables)
        :return-statement (interpret-return-statement ast entity-id variables)
        :block (interpret-block ast entity-id variables)
+       :lambda (interpret-lambda ast entity-id variables)
        :attr-accessor-statement nil ; These are handled during class definition
        :attr-reader-statement nil   ; These are handled during class definition
        :attr-writer-statement nil   ; These are handled during class definition
@@ -2031,6 +2117,7 @@
        :next-statement (interpret-next-statement ast entity-id variables)
        :return-statement (interpret-return-statement ast entity-id variables)
        :block (interpret-block ast entity-id variables)
+       :lambda (interpret-lambda ast entity-id variables)
        :attr-accessor-statement nil ; These are handled during class definition
        :attr-reader-statement nil   ; These are handled during class definition
        :attr-writer-statement nil   ; These are handled during class definition
@@ -2067,7 +2154,17 @@
             :builtin true
             :methods (atom {})
             :ruby-class true
-            :class-methods {"new" {:ruby-class-method true :name "new"}}}})
+            :class-methods {"new" {:ruby-class-method true :name "new"}}}
+   ;; Exception classes
+   "Exception" {:name "Exception" :builtin true :exception-class true}
+   "StandardError" {:name "StandardError" :builtin true :exception-class true}
+   "RuntimeError" {:name "RuntimeError" :builtin true :exception-class true}
+   "NameError" {:name "NameError" :builtin true :exception-class true}
+   "NoMethodError" {:name "NoMethodError" :builtin true :exception-class true}
+   "TypeError" {:name "TypeError" :builtin true :exception-class true}
+   "ArgumentError" {:name "ArgumentError" :builtin true :exception-class true}
+   "SyntaxError" {:name "SyntaxError" :builtin true :exception-class true}
+   "ZeroDivisionError" {:name "ZeroDivisionError" :builtin true :exception-class true}})
 
 (defn interpret-program
   "Interpret a complete program (sequence of statements)."

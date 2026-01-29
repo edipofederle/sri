@@ -52,7 +52,9 @@
   (register-method "Object" :object_id #(System/identityHashCode %))
 
   ;; Object-specific methods
-  (register-method "Object" :class #(ruby-class %))
+  ;; Return a class object (map with :name) so that .class.name works
+  (register-method "Object" :class #(let [class-name (ruby-class %)]
+                                       {:name class-name :builtin true}))
   (register-method "Object" :nil? #(nil? (:value %)))
   (register-method "Object" :respond_to? #(respond-to? %1 %2))
   (register-method "Object" :methods #(class-methods (ruby-class %)))

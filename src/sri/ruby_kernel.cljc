@@ -15,8 +15,8 @@
     (println)
     (doseq [arg args]
       (cond
-        (and (record? arg) 
-             (contains? arg :data) 
+        (and (record? arg)
+             (contains? arg :data)
              (instance? clojure.lang.Atom (:data arg))
              (vector? @(:data arg)))
         ;; Print ruby array elements on separate lines
@@ -25,11 +25,15 @@
             (nil? item) (println)
             (keyword? item) (println (name item)) ; Print symbols without colon prefix
             (satisfies? RubyInspectable item) (println (to-s item))
+            ;; Class objects (maps with :name and :builtin) should show just the name
+            (and (map? item) (:name item) (:builtin item)) (println (:name item))
             :else (println (str item))))
-        
+
         (keyword? arg) (println (name arg)) ; Print symbols without colon prefix (Ruby behavior)
         (nil? arg) (println "nil")
         (satisfies? RubyInspectable arg) (println (to-s arg))
+        ;; Class objects (maps with :name and :builtin) should show just the name
+        (and (map? arg) (:name arg) (:builtin arg)) (println (:name arg))
         :else (println (str arg)))))
   nil)
 
@@ -44,9 +48,11 @@
                                 (string? arg) (str "\"" arg "\"")
                                 (and (map? arg) (contains? arg :value)) (str "\"" (:value arg) "\"") ; RubyString
                                 (satisfies? RubyInspectable arg) (to-s arg)
+                                ;; Class objects (maps with :name and :builtin) should show just the name
+                                (and (map? arg) (:name arg) (:builtin arg)) (:name arg)
                                 :else (str arg))) args)]
       (println (str/join " " output-parts))))
-  (if (= (count args) 1) 
+  (if (= (count args) 1)
     (first args)  ; Return the original argument
     args))
 
@@ -58,6 +64,8 @@
       (keyword? arg) (print (name arg)) ; Print symbols without colon prefix (Ruby behavior)
       (nil? arg) (print "")
       (satisfies? RubyInspectable arg) (print (to-s arg))
+      ;; Class objects (maps with :name and :builtin) should show just the name
+      (and (map? arg) (:name arg) (:builtin arg)) (print (:name arg))
       :else (print (str arg))))
   (flush)  ; Flush output after printing
   (.flush System/out)  ; Additional Java-level flush

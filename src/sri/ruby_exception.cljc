@@ -31,7 +31,7 @@
    (invoke-exception-method runtime-error :message [])     ; => \"Something went wrong\"
    (invoke-exception-method runtime-error :backtrace [])   ; => [\"file.rb:1:in `<main>`\"]
    ```"
-  (:require [sri.ruby-protocols :refer [RubyObject RubyInspectable RubyComparable to-s ruby-class ruby-ancestors]]
+  (:require [sri.ruby-protocols :refer [RubyObject RubyInspectable RubyComparable to-s ruby-class ruby-ancestors ruby-eq ruby-compare]]
             [sri.ruby-method-registry :refer [register-method]]))
 
 ;; =============================================================================
@@ -63,7 +63,18 @@
   (to-s [_]
     (str message))
   (inspect [this]
-    (str "#<" exception-class ": " message ">")))
+    (str "#<" exception-class ": " message ">"))
+
+  RubyComparable
+  (ruby-eq [this other]
+    (if (instance? RubyException other)
+      (and (= message (:message other))
+           (= exception-class (:exception-class other)))
+      false))
+  (ruby-compare [this other]
+    (if (instance? RubyException other)
+      (compare [exception-class message] [(:exception-class other) (:message other)])
+      nil)))
 
 ;; =============================================================================
 ;; Exception Factory Functions

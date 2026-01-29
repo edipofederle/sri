@@ -45,7 +45,8 @@
   (testing "Ruby method invocation"
     (let [obj (rc/create-object "hello")]
       (is (= "hello" (rc/invoke-ruby-method obj :to_s)))
-      (is (= "Object" (rc/invoke-ruby-method obj :class)))
+      ;; .class now returns a class object with :name
+      (is (= {:name "Object" :builtin true} (rc/invoke-ruby-method obj :class)))
       (is (thrown? Exception (rc/invoke-ruby-method obj :nonexistent))))))
 
 (deftest equality-test

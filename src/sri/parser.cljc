@@ -325,10 +325,28 @@
 
 (declare parse-expression parse-statement parse-primary parse-case-statement)
 
+(defn can-start-argument?
+  "Check if a token can start an argument (for parenthesis-less method calls)."
+  [token]
+  (when token
+    (or (= (:type token) :string)
+        (= (:type token) :number)
+        (= (:type token) :identifier)
+        (= (:type token) :symbol)
+        (= (:type token) :instance-variable)
+        (= (:type token) :class-variable)
+        (= (:type token) :global-variable)
+        (and (= (:type token) :operator)
+             (= "(" (:value token)))
+        (and (= (:type token) :keyword)
+             (contains? #{"true" "false" "nil" "self" "not" "lambda" "proc"} (:value token))))))
+
 (defn parse-argument-list
-  "Parse a comma-separated argument list enclosed in parentheses."
+  "Parse a comma-separated argument list, with or without parentheses."
   [state]
-  (if (match-token? state :operator "(")
+  (cond
+    ;; With parentheses - parse until closing paren
+    (match-token? state :operator "(")
     (let [[_ state-after-paren] (consume-token state)]
       (if (match-token? state-after-paren :operator ")")
         (let [[_ final-state] (consume-token state-after-paren)]
@@ -353,6 +371,26 @@
                 (throw (ex-info "Expected ',' or ')' in argument list"
                                {:token error-token
                                 :position (when error-token {:line (:line error-token) :column (:column error-token)})}))))))))
+
+    ;; Without parentheses - parse comma-separated expressions until newline/eof/block
+    (can-start-argument? (current-token state))
+    (loop [current-state state
+           args []]
+      (let [[state-after-arg arg-id] (parse-expression current-state)
+            new-args (conj args arg-id)
+            next-token (current-token state-after-arg)]
+        (cond
+          ;; More arguments after comma
+          (match-token? state-after-arg :operator ",")
+          (let [[_ state-after-comma] (consume-token state-after-arg)]
+            (recur state-after-comma new-args))
+
+          ;; End of arguments - return what we have
+          :else
+          [state-after-arg new-args])))
+
+    ;; No arguments
+    :else
     [state []]))
 
 (defn parse-statements-until
@@ -835,10 +873,88 @@
                                                :position position)]
             [(assoc current-state :ast new-ast) entity-id]))))))
 
+(defn parse-lambda-expression
+  "Parse a lambda expression: -> { body } or -> (params) { body }"
+  [state]
+  (when (match-token? state :lambda-arrow)
+    (let [[arrow-token state-after-arrow] (consume-token state)
+          position {:line (:line arrow-token) :column (:column arrow-token)}
+          ;; Check for optional parameters in parentheses
+          [state-with-params params]
+          (if (match-token? state-after-arrow :operator "(")
+            ;; Has parameters: -> (x, y) { ... }
+            (let [[_ state-after-open] (consume-token state-after-arrow)]
+              (loop [current-state state-after-open
+                     params []]
+                (let [state-skip (skip-separators current-state)]
+                  (if (match-token? state-skip :operator ")")
+                    (let [[_ state-after-close] (consume-token state-skip)]
+                      [state-after-close params])
+                    (let [[param-token state-after-param] (consume-token state-skip)
+                          param-name (:value param-token)
+                          state-skip2 (skip-separators state-after-param)]
+                      (if (match-token? state-skip2 :operator ",")
+                        (let [[_ state-after-comma] (consume-token state-skip2)]
+                          (recur state-after-comma (conj params param-name)))
+                        (recur state-skip2 (conj params param-name))))))))
+            ;; No parameters: -> { ... }
+            [state-after-arrow []])
+          ;; Now parse the block body
+          state-skip (skip-separators state-with-params)]
+      (if (match-token? state-skip :operator "{")
+        ;; Brace block: -> { body }
+        (let [[_ state-after-open-brace] (consume-token state-skip)
+              state-skip-inner (skip-separators state-after-open-brace)
+              ;; Check for block parameters |x, y|
+              [state-after-block-params block-params]
+              (if (match-token? state-skip-inner :operator "|")
+                (let [[_ state-after-pipe] (consume-token state-skip-inner)
+                      [state-after-params inner-params] (parse-block-parameters state-after-pipe)
+                      [_ state-after-closing-pipe] (consume-token state-after-params)]
+                  [state-after-closing-pipe inner-params])
+                [state-skip-inner []])
+              ;; Parse body statements
+              [state-after-body body-statements] (parse-block-body state-after-block-params)
+              ;; Skip closing }
+              [_ final-state] (consume-token state-after-body)
+              ;; Combine lambda params with any block params
+              all-params (if (empty? params) block-params params)
+              ;; Create lambda node (reuse :block node type for compatibility)
+              [new-ast entity-id] (create-node (:ast final-state) :lambda
+                                              :params all-params
+                                              :body body-statements
+                                              :position position)]
+          [(assoc final-state :ast new-ast) entity-id])
+        ;; do/end block: -> do body end
+        (when (match-token? state-skip :keyword "do")
+          (let [[_ state-after-do] (consume-token state-skip)
+                state-skip-inner (skip-separators state-after-do)
+                ;; Check for block parameters |x, y|
+                [state-after-block-params block-params]
+                (if (match-token? state-skip-inner :operator "|")
+                  (let [[_ state-after-pipe] (consume-token state-skip-inner)
+                        [state-after-params inner-params] (parse-block-parameters state-after-pipe)
+                        [_ state-after-closing-pipe] (consume-token state-after-params)]
+                    [state-after-closing-pipe inner-params])
+                  [state-skip-inner []])
+                ;; Parse body statements
+                [state-after-body body-statements] (parse-block-body state-after-block-params)
+                ;; Skip closing 'end'
+                [_ final-state] (expect-token state-after-body :keyword "end")
+                ;; Combine lambda params with any block params
+                all-params (if (empty? params) block-params params)
+                ;; Create lambda node
+                [new-ast entity-id] (create-node (:ast final-state) :lambda
+                                                :params all-params
+                                                :body body-statements
+                                                :position position)]
+            [(assoc final-state :ast new-ast) entity-id]))))))
+
 (defn parse-primary
   "Parse a primary expression (literals, identifiers, parenthesized expressions, method calls)."
   [state]
-  (let [result (or (when (match-token? state :operator "-")
+  (let [result (or (parse-lambda-expression state)
+                   (when (match-token? state :operator "-")
                      (let [[minus-token state-after-minus] (consume-token state)
                            [state-after-operand operand-id] (parse-primary state-after-minus)
                            [new-ast unary-id] (create-node (:ast state-after-operand) :unary-operation
@@ -888,6 +1004,10 @@
                                                               :position {:line (:line id-token) :column (:column id-token)})
                                state-with-ast (assoc state-after-id :ast new-ast)]
                            (parse-method-call state-with-ast nil identifier-value id-token))
+
+                         ;; Check for method call without parentheses (e.g., puts "hello")
+                         (can-start-argument? (current-token state-after-id))
+                         (parse-method-call state-after-id nil identifier-value id-token)
 
                          ;; Otherwise, treat as regular identifier
                          :else

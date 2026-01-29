@@ -93,6 +93,10 @@
         (instance? RubyString str2) (->RubyString (str (:value str1) (:value str2)))
         ;; Ruby String + Java String
         (string? str2) (->RubyString (str (:value str1) str2))
+        ;; Ruby String + RubyInspectable object
+        (satisfies? RubyInspectable str2) (->RubyString (str (:value str1) (to-s str2)))
+        ;; Class objects (maps with :name and :builtin) should show just the name
+        (and (map? str2) (:name str2) (:builtin str2)) (->RubyString (str (:value str1) (:name str2)))
         ;; Ruby String + Number or other types (convert to string)
         :else (->RubyString (str (:value str1) (str str2))))))
 

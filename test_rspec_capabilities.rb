@@ -96,6 +96,97 @@ class Integer
   end
 end
 
+class Float
+  def should
+    ShouldExpectation.new(self)
+  end
+end
+
+# --------------------------
+# raise_error matcher
+# --------------------------
+
+class RaiseErrorMatcher
+  def initialize(expected_error)
+    @expected_error = expected_error
+    @has_expected = false
+    # Store the class name for comparison
+    if expected_error
+      @has_expected = true
+      @expected_name = expected_error.name
+    end
+  end
+
+  def matches?(actual_error)
+    if @has_expected
+      # Compare class names as strings
+      actual_error.class.name == @expected_name
+    else
+      # Any error matches
+      true
+    end
+  end
+
+  def failure_message_for_no_error
+    "expected #{@expected_name} to be raised, but nothing was raised"
+  end
+
+  def failure_message_for_wrong_error(actual_error)
+    "expected #{@expected_name} but got #{actual_error.class.name}"
+  end
+end
+
+def raise_error(expected_error)
+  RaiseErrorMatcher.new(expected_error)
+end
+
+# Proc class for lambda.should(matcher) support
+class Proc
+  def should(matcher)
+    error_raised = nil
+    begin
+      self.call
+    rescue => e
+      error_raised = e
+    end
+
+    # If no error was raised, fail
+    if error_raised
+      # Check if matcher matches
+      if matcher.matches?(error_raised)
+        true
+      else
+        raise(matcher.failure_message_for_wrong_error(error_raised))
+      end
+    else
+      raise(matcher.failure_message_for_no_error)
+    end
+  end
+end
+
+# Helper to test that code raises an error
+# Usage: should_raise(NameError) { eval("_4_2") }
+def should_raise(expected_error)
+  actual_error = nil
+  begin
+    yield
+  rescue => e
+    actual_error = e
+  end
+
+  expected_name = expected_error.name
+
+  if actual_error == nil
+    raise("expected #{expected_name} to be raised, but nothing was raised")
+  end
+
+  actual_name = actual_error.class.name
+  if actual_name != expected_name
+    raise("expected #{expected_name} but got #{actual_name}")
+  end
+  true
+end
+
 # --------------------------
 # Load test file from ARGV
 # --------------------------
