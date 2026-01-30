@@ -673,8 +673,8 @@
         (if (= next-ch \&)
           (let [[_ state2] (next-char state1)]
             [(create-token :operator "&&" start-line start-column) state2])
-          (throw (ex-info "Unexpected character '&' (use && for logical AND)"
-                         {:line start-line :column start-column}))))
+          ;; Single & is used for block parameter capture (def foo(&block))
+          [(create-token :operator "&" start-line start-column) state1]))
 
       (= ch \|)
       (let [[_ state1] (next-char state)

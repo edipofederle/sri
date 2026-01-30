@@ -62,10 +62,13 @@
   (some? (resolve-method-definition variables method-name)))
 
 (defn bind-method-parameters
-  "Create a new variable scope with method parameters bound to arguments."
+  "Create a new variable scope with method parameters bound to arguments.
+   Block parameters (prefixed with &) are handled separately."
   [variables params args]
-  (let [local-vars (atom @variables)]
-    (doseq [[param arg] (map vector params args)]
+  (let [local-vars (atom @variables)
+        ;; Filter out block parameters for normal binding
+        regular-params (filter #(not (clojure.string/starts-with? % "&")) params)]
+    (doseq [[param arg] (map vector regular-params args)]
       (swap! local-vars assoc param arg))
     local-vars))
 
@@ -1207,9 +1210,21 @@
                                        {:type :ruby-exception
                                         :exception (ruby-classes/create-load-error
                                                     (str "cannot load such file -- " filename-str))})))
+                     (catch clojure.lang.ExceptionInfo e
+                       ;; Re-throw Ruby exceptions as-is so rescue can catch them
+                       (if (= (:type (ex-data e)) :ruby-exception)
+                         (throw e)
+                         ;; Convert parse/interpreter errors to LoadError
+                         (throw (ex-info "ruby-exception"
+                                         {:type :ruby-exception
+                                          :exception (ruby-classes/create-load-error
+                                                      (str "load error in " filename-str ": " (.getMessage e)))}))))
                      (catch Exception e
-                       (throw (ex-info (str "load error: " (.getMessage e))
-                                       {:filename filename-str :original-error e})))))
+                       ;; Convert other exceptions to LoadError
+                       (throw (ex-info "ruby-exception"
+                                       {:type :ruby-exception
+                                        :exception (ruby-classes/create-load-error
+                                                    (str "load error in " filename-str ": " (.getMessage e)))})))))
                  (throw (ex-info "ruby-exception"
                                  {:type :ruby-exception
                                   :exception (ruby-classes/create-argument-error
@@ -1269,11 +1284,25 @@
         method-ast ast ; Use the AST from the method definition record
         local-vars (bind-method-parameters variables params args)
         ;; Check if this method call has a block attached (in the CALLER's AST)
-        block-id (parser/get-component caller-ast entity-id :block)]
+        block-id (parser/get-component caller-ast entity-id :block)
+        ;; Check for block parameter (e.g., &block)
+        block-param (first (filter #(clojure.string/starts-with? % "&") params))]
     ;; Store block context in local variables if a block is provided
     (when block-id
       (swap! local-vars assoc "__block_id" block-id)
-      (swap! local-vars assoc "__block_ast" caller-ast))
+      (swap! local-vars assoc "__block_ast" caller-ast)
+      ;; If there's a &block parameter, convert block to a lambda
+      (when block-param
+        (let [param-name (subs block-param 1) ; Remove the & prefix
+              block-params (parser/get-component caller-ast block-id :block-params)
+              block-body-ids (parser/get-component caller-ast block-id :block-body)
+              ;; Create a lambda object from the block
+              lambda-obj {:type :lambda
+                          :params (or block-params [])
+                          :body block-body-ids
+                          :ast caller-ast
+                          :closure @local-vars}]
+          (swap! local-vars assoc param-name lambda-obj))))
     ;; Execute method body with return handling
     (execute-with-return-handling method-ast body-id local-vars)))
 
@@ -1448,12 +1477,10 @@
                       (when exception-var
                         (swap! variables assoc exception-var ruby-exception))
 
-                      ;; For now, catch all StandardErrors (Ruby default behavior)
-                      (if (ruby-classes/standard-error? ruby-exception)
-                        ;; Execute this rescue clause
-                        (interpret-block ast rescue-body variables)
-                        ;; Try next rescue clause
-                        (recur (rest clauses))))
+                      ;; TODO: When rescue clause has exception class filter, check it here
+                      ;; For now without exception class filter, catch all Ruby exceptions
+                      ;; (stricter Ruby behavior would only catch StandardError)
+                      (interpret-block ast rescue-body variables))
                     ;; No matching rescue clause found - re-throw
                     (throw e)))
                 ;; No rescue clauses - re-throw
@@ -2179,7 +2206,10 @@
                                               (let [actual-class (ruby-class-name obj)
                                                     expected-class-name (extract-class-name expected-class)]
                                                 (= actual-class expected-class-name))))}
-         initial-vars (merge builtin-vars custom-vars spec-helpers)
+         ;; Create main object (top-level self in Ruby)
+         main-object {:class-name "Object"
+                      :instance-variables (atom {})}
+         initial-vars (merge builtin-vars custom-vars spec-helpers {"self" main-object})
          variables (atom initial-vars)
          root-type (parser/get-node-type ast root-entity-id)]
      (if (= :program root-type)

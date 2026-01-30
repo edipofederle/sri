@@ -569,7 +569,7 @@
                                        :arguments args
                                        :block block-id
                                        :position {:line (:line token) :column (:column token)})]
-    (when block-id
+    #_(when block-id
       (binding [*out* *err*]
         (println "DEBUG: Created method call entity" entity-id "for" method-name "with block" block-id)
         (flush)))
@@ -1197,7 +1197,7 @@
     (let [[_ state-after-begin] (consume-token state)
           state-skip-newlines (skip-separators state-after-begin)
           [state-after-body body-id] (parse-block state-skip-newlines)]
-      
+
       ;; Parse rescue clauses
       (loop [current-state state-after-body
              rescue-clauses []]
@@ -1205,7 +1205,7 @@
           ;; Parse rescue clause
           (let [[_ state-after-rescue] (consume-token current-state)
                 ;; Check for exception variable binding (=> var)
-                [state-after-exception exception-var] 
+                [state-after-exception exception-var]
                 (if (match-token? state-after-rescue :operator "=>")
                   (let [[_ state-after-arrow] (consume-token state-after-rescue)]
                     (if (match-token? state-after-arrow :identifier)
@@ -1213,12 +1213,12 @@
                         [state-after-var (:value var-token)])
                       [state-after-arrow nil]))
                   [state-after-rescue nil])
-                
+
                 state-skip-rescue-newlines (skip-separators state-after-exception)
                 [state-after-rescue-body rescue-body-id] (parse-block state-skip-rescue-newlines)
                 rescue-clause {:body rescue-body-id :variable exception-var}]
             (recur state-after-rescue-body (conj rescue-clauses rescue-clause)))
-          
+
           ;; Check for ensure clause
           (let [[state-after-ensure ensure-body-id]
                 (if (match-token? current-state :keyword "ensure")
@@ -1227,7 +1227,7 @@
                         [state-after-ensure-body ensure-body-id] (parse-block state-skip-ensure-newlines)]
                     [state-after-ensure-body ensure-body-id])
                   [current-state nil])
-                
+
                 [_ final-state] (expect-token state-after-ensure :keyword "end")
                 [new-ast entity-id] (create-node (:ast final-state) :begin-statement
                                                :body body-id
@@ -1464,7 +1464,8 @@
                          {:token (current-token current-state)})))))))
 
 (defn parse-parameter-list
-  "Parse a comma-separated parameter list enclosed in parentheses."
+  "Parse a comma-separated parameter list enclosed in parentheses.
+   Supports block parameters with & prefix (e.g., &block)."
   [state]
   (if (match-token? state :operator "(")
     (let [[_ state-after-paren] (consume-token state)]
@@ -1473,7 +1474,21 @@
           [final-state []])
         (loop [current-state state-after-paren
                params []]
-          (if (match-token? current-state :identifier)
+          (cond
+            ;; Block parameter: &block
+            (match-token? current-state :operator "&")
+            (let [[_ state-after-amp] (consume-token current-state)
+                  [param-token state-after-param] (consume-token state-after-amp)
+                  block-param-name (str "&" (:value param-token))
+                  new-params (conj params block-param-name)]
+              (if (match-token? state-after-param :operator ")")
+                (let [[_ final-state] (consume-token state-after-param)]
+                  [final-state new-params])
+                (throw (ex-info "Block parameter must be last in parameter list"
+                               {:token (current-token state-after-param)}))))
+
+            ;; Regular parameter
+            (match-token? current-state :identifier)
             (let [[param-token state-after-param] (consume-token current-state)
                   new-params (conj params (:value param-token))]
               (cond
@@ -1488,6 +1503,8 @@
                 :else
                 (throw (ex-info "Expected ',' or ')' in parameter list"
                                {:token (current-token state-after-param)}))))
+
+            :else
             (throw (ex-info "Expected parameter name"
                            {:token (current-token current-state)}))))))
     [state []]))

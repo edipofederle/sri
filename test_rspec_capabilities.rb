@@ -1,15 +1,46 @@
 $test_results = []
+$before_blocks = []
 
 def describe(description)
   puts("Describe: #{description}")
-  yield
+  # Save current before blocks
+  saved_before_blocks = $before_blocks
+  $before_blocks = []
+  begin
+    yield
+  rescue => e
+    puts("  ERROR in describe block: #{e.message}")
+    $test_results << "ERROR"
+  end
+  # Restore previous before blocks
+  $before_blocks = saved_before_blocks
+end
+
+def before(scope, &block)
+  # Store the block to run before each test
+  $before_blocks << block
 end
 
 def it(description)
   begin
-    yield
-    $test_results << "PASS"
-    puts("  It: #{description} (pass)")
+    # Run all before blocks first
+    before_failed = false
+    i = 0
+    while i < $before_blocks.length
+      begin
+        $before_blocks[i].call
+      rescue => be
+        before_failed = true
+        $test_results << "ERROR"
+        puts("  It: #{description} (error in before) - #{be.message}")
+      end
+      i = i + 1
+    end
+    if !before_failed
+      yield
+      $test_results << "PASS"
+      puts("  It: #{description} (pass)")
+    end
   rescue => e
     $test_results << "FAIL"
     puts("  It: #{description} (fail) - #{e.message}")
@@ -97,6 +128,12 @@ class Integer
 end
 
 class Float
+  def should
+    ShouldExpectation.new(self)
+  end
+end
+
+class String
   def should
     ShouldExpectation.new(self)
   end
@@ -193,7 +230,12 @@ end
 
 if ARGV.length > 0
   test_file = ARGV[0]
-  load(test_file)
+  begin
+    load(test_file)
+  rescue => e
+    puts("ERROR loading test file: #{e.message}")
+    $test_results << "ERROR"
+  end
 else
   puts("Usage: lein run test_rspec_capabilities.rb <test_file.rb>")
   puts("No test file provided.")
@@ -203,15 +245,21 @@ puts("")
 
 total = $test_results.length
 pass_count = 0
+fail_count = 0
+error_count = 0
 i = 0
 
 while i < total
   if $test_results[i] == "PASS"
     pass_count = pass_count + 1
   end
+  if $test_results[i] == "FAIL"
+    fail_count = fail_count + 1
+  end
+  if $test_results[i] == "ERROR"
+    error_count = error_count + 1
+  end
   i = i + 1
 end
 
-fail_count = total - pass_count
-
-puts("#{pass_count} test pass, #{fail_count} test fail")
+puts("#{pass_count} pass, #{fail_count} fail, #{error_count} error")
