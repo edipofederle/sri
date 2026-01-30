@@ -130,6 +130,23 @@ Run the test suite:
 lein test
 ```
 
+### Running Ruby Specs
+
+This is in a **very early stage**, but it's possible to run some specs from the [Ruby Spec Suite](https://github.com/ruby/spec) against Sri:
+
+```bash
+make rspec FILE=/path/to/spec/language/numbers_spec.rb
+```
+
+For example, if you have the ruby/spec repository cloned as a sibling directory:
+
+```bash
+make rspec FILE=/path/to/spec/language/numbers_spec.rb
+make rspec FILE=/path/to/spec/language/array_spec.rb
+```
+
+Note: Only a VERY small subset of specs currently pass (for example `numbers_spec.rb`, `array_spec.rb`)  This is primarily useful for development and tracking progress toward Ruby compatibility.
+
 ## Development
 
 ### Project Structure
