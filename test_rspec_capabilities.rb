@@ -89,6 +89,26 @@ def eq(expected)
   EqMatcher.new(expected)
 end
 
+# be_kind_of matcher
+class BeKindOfMatcher
+  def initialize(expected_class)
+    @expected_class = expected_class
+  end
+
+  def matches?(actual)
+    # Check if actual is an instance of the expected class
+    actual.class.name == @expected_class.name
+  end
+
+  def failure_message(actual)
+    "expected #{actual.inspect} to be a kind of #{@expected_class.name}"
+  end
+end
+
+def be_kind_of(expected_class)
+  BeKindOfMatcher.new(expected_class)
+end
+
 # --------------------------
 # Example usage
 # --------------------------
@@ -121,9 +141,40 @@ class ShouldExpectation
   end
 end
 
+class ShouldNotExpectation
+  def initialize(actual)
+    @actual = actual
+  end
+
+  def ==(expected)
+    if @actual == expected
+      raise("expected #{@actual.inspect} to not equal #{expected.inspect}")
+    end
+    true
+  end
+
+  def be_kind_of(expected_class)
+    if @actual.class.name == expected_class.name
+      raise("expected #{@actual.inspect} to not be a kind of #{expected_class.name}")
+    end
+    true
+  end
+
+  def be_nil
+    if @actual == nil
+      raise("expected #{@actual.inspect} to not be nil")
+    end
+    true
+  end
+end
+
 class Integer
   def should
     ShouldExpectation.new(self)
+  end
+
+  def should_not
+    ShouldNotExpectation.new(self)
   end
 end
 
@@ -131,13 +182,72 @@ class Float
   def should
     ShouldExpectation.new(self)
   end
+
+  def should_not
+    ShouldNotExpectation.new(self)
+  end
 end
 
 class String
   def should
     ShouldExpectation.new(self)
   end
+
+  def should_not
+    ShouldNotExpectation.new(self)
+  end
 end
+
+class Array
+  def should
+    ShouldExpectation.new(self)
+  end
+
+  def should_not
+    ShouldNotExpectation.new(self)
+  end
+end
+
+class NilClass
+  def should
+    ShouldExpectation.new(self)
+  end
+
+  def should_not
+    ShouldNotExpectation.new(self)
+  end
+end
+
+class TrueClass
+  def should
+    ShouldExpectation.new(self)
+  end
+
+  def should_not
+    ShouldNotExpectation.new(self)
+  end
+end
+
+class FalseClass
+  def should
+    ShouldExpectation.new(self)
+  end
+
+  def should_not
+    ShouldNotExpectation.new(self)
+  end
+end
+
+class Object
+  def should
+    ShouldExpectation.new(self)
+  end
+
+  def should_not
+    ShouldNotExpectation.new(self)
+  end
+end
+
 
 # --------------------------
 # raise_error matcher

@@ -1,7 +1,8 @@
 (ns sri.core
   (:require [sri.tokenizer :as t]
             [sri.parser :as p]
-            [sri.interpreter :as i])
+            [sri.interpreter :as i]
+            [sri.ruby-kernel :as kernel])
   (:gen-class))
 
 (defn evaluate
@@ -64,7 +65,9 @@
         (eval-string (last args))
         (try
           (let [source (slurp filename)
-                exit-code (evaluate source ruby-argv)]
+                absolute-path (.getCanonicalPath (java.io.File. ^String filename))
+                exit-code (binding [kernel/*current-file* absolute-path]
+                            (evaluate source ruby-argv))]
             (System/exit exit-code))
           (catch java.io.FileNotFoundException _
             (println "Error: File not found:" filename)

@@ -2,7 +2,8 @@
   "Implementation of Ruby's Kernel module - methods available to all objects."
   (:require [clojure.string :as str]
             [sri.ruby-method-registry :refer [register-method]]
-            [sri.ruby-protocols :refer [RubyInspectable to-s]]))
+            [sri.ruby-protocols :refer [RubyInspectable to-s]])
+  (:import [java.io File]))
 
 ;; =============================================================================
 ;; Kernel Module Implementation
@@ -111,3 +112,52 @@
   "Get all methods defined in the Kernel module."
   []
   (:methods kernel-module))
+
+;; =============================================================================
+;; require_relative Implementation
+;; https://www.rubydoc.info/stdlib/core/Kernel:require_relative
+;; =============================================================================
+
+;; Track already required files to avoid double-loading
+(defonce ^:private required-files (atom #{}))
+
+;; Dynamic var for current file path (set by interpreter during file execution)
+(def ^:dynamic *current-file* nil)
+
+(defn resolve-relative-path
+  "Resolve a relative path against the current file's directory.
+   Adds .rb extension if not present."
+  [relative-path current-file]
+  (let [path-str (cond
+                   (string? relative-path) relative-path
+                   (satisfies? RubyInspectable relative-path) (to-s relative-path)
+                   :else (str relative-path))
+        ;; Add .rb extension if not present
+        path-with-ext (if (str/ends-with? path-str ".rb")
+                        path-str
+                        (str path-str ".rb"))
+        ;; Resolve relative to current file's directory
+        base-dir (if current-file
+                   (.getParent (File. ^String current-file))
+                   (System/getProperty "user.dir"))]
+    (.getCanonicalPath (File. ^String base-dir ^String path-with-ext))))
+
+(defn already-required?
+  "Check if a file has already been required."
+  [absolute-path]
+  (contains? @required-files absolute-path))
+
+(defn mark-as-required!
+  "Mark a file as required."
+  [absolute-path]
+  (swap! required-files conj absolute-path))
+
+(defn unmark-as-required!
+  "Remove a file from the required set (on error)."
+  [absolute-path]
+  (swap! required-files disj absolute-path))
+
+(defn reset-required-files!
+  "Reset the required files set (useful for testing)."
+  []
+  (reset! required-files #{}))

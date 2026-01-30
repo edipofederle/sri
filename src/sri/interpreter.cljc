@@ -7,11 +7,15 @@
             [sri.ruby-classes-new :as ruby-classes]
             [sri.ruby-object :as ruby-object]
             [sri.ruby-string :as ruby-string]
+            [sri.ruby-nil-class :as ruby-nil-class]
+            [sri.ruby-true-class :as ruby-true-class]
+            [sri.ruby-false-class :as ruby-false-class]
+            [sri.ruby-kernel :as kernel]
             [sri.ruby-protocols :refer [to-s RubyComparable RubyInspectable RubyObject ruby-eq ruby-class]]
             [sri.ruby-method-registry :refer [method-lookup]]))
 
 
-(declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program interpret-block call-lambda)
+(declare interpret-expression interpret-statement interpret-user-method execute-block interpret-program interpret-block call-lambda interpret-class-definition-with-context)
 
 ;; Global variables store
 (defonce global-variables (atom {}))
@@ -87,6 +91,10 @@
   "Get the Ruby class name for an object."
   [obj]
   (cond
+    ;; Check nil, true, false first (before other checks)
+    (nil? obj) "NilClass"
+    (true? obj) "TrueClass"
+    (false? obj) "FalseClass"
     ;; Check if object implements RubyObject protocol FIRST (before map? check)
     ;; because records like RubyString are also maps
     (satisfies? RubyObject obj)
@@ -186,7 +194,12 @@
               expr-tokens (sri.tokenizer/tokenize expr-source)
               temp-state (parser/create-parse-state expr-tokens)
               [final-state expr-id] (parser/parse-expression temp-state)
-              expr-result (str (interpret-expression (:ast final-state) expr-id variables))]
+              raw-result (interpret-expression (:ast final-state) expr-id variables)
+              ;; Convert result to string - use to-s for Ruby objects, str for others
+              expr-result (cond
+                           (nil? raw-result) ""
+                           (satisfies? RubyInspectable raw-result) (to-s raw-result)
+                           :else (str raw-result))]
           (recur (str result before-match expr-result) end))
         ;; No more matches, append the rest
         (str result (subs content last-end))))))
@@ -204,15 +217,18 @@
             interpolated-words (map (fn [word]
                                      (let [interpolated (interpolate-string word variables)]
                                        ;; Restore escaped characters (placeholders → actual characters)
-                                       (-> interpolated
-                                           (clojure.string/replace "\u0001" " ")
-                                           (clojure.string/replace "\u0002" "\t")
-                                           (clojure.string/replace "\u0003" "\n"))))
+                                       ;; Convert to RubyString for consistency with array literals
+                                       (ruby-string/create-string
+                                        (-> interpolated
+                                            (clojure.string/replace "\u0001" " ")
+                                            (clojure.string/replace "\u0002" "\t")
+                                            (clojure.string/replace "\u0003" "\n")))))
                                    raw-words)]
         (apply ruby-classes/create-array interpolated-words))
-      ;; Handle %w() without interpolation
-      (let [words (parser/get-component ast entity-id :words)]
-        (apply ruby-classes/create-array words)))))
+      ;; Handle %w() without interpolation - convert to RubyStrings for consistency
+      (let [words (parser/get-component ast entity-id :words)
+            ruby-strings (map ruby-string/create-string words)]
+        (apply ruby-classes/create-array ruby-strings)))))
 
 (defn interpret-array-literal
   "Interpret an array literal like [1, 2, 3]."
@@ -418,12 +434,28 @@
   [ast left-id right-id variables operation default-value]
   (let [right-val (interpret-expression ast right-id variables)
         left-node-type (parser/get-node-type ast left-id)]
-    (if (= left-node-type :identifier)
+    (cond
+      ;; Regular variable assignment
+      (= left-node-type :identifier)
       (let [var-name (parser/get-component ast left-id :value)
             current-val (or (get @variables var-name) default-value)
             new-val (operation current-val right-val)]
         (swap! variables assoc var-name new-val)
         new-val)
+
+      ;; Instance variable compound assignment (@var += value)
+      (= left-node-type :instance-variable-access)
+      (let [var-name (parser/get-component ast left-id :variable)
+            instance (get @variables "self")]
+        (if (and instance (map? instance) (:instance-variables instance))
+          (let [current-val (or (get @(:instance-variables instance) var-name) default-value)
+                new-val (operation current-val right-val)]
+            (swap! (:instance-variables instance) assoc var-name new-val)
+            new-val)
+          (throw (ex-info "Instance variable compound assignment outside of instance context"
+                          {:variable var-name}))))
+
+      :else
       (throw (ex-info "Invalid left-hand side of compound assignment"
                       {:left-side left-node-type})))))
 
@@ -805,24 +837,36 @@
     ::method-not-found))
 
 (defn try-primitive-class-method
-  "Try to find user-defined methods on primitive types (Integer, String, etc)."
+  "Try to find user-defined methods on primitive types (Integer, String, etc).
+   Checks the class and its ancestors (Object, etc.) for the method."
   [receiver method-name args variables ast]
   (let [class-name (ruby-class-name receiver)
-        class-info (get @variables class-name)]
-    (if (and class-info (:methods class-info))
-      (let [methods @(:methods class-info)
-            method-info (get methods method-name)]
-        (if method-info
-          ;; Found a user-defined method, execute it
-          (let [method-params (:parameters method-info)
-                method-body (:body method-info)
-                method-ast (or (:ast method-info) ast)
-                local-vars (atom (merge @variables
-                                        {"self" receiver}
-                                        (zipmap method-params args)))]
-            (interpret-expression method-ast method-body local-vars))
-          ::method-not-found))
-      ::method-not-found)))
+        ;; Get ancestor chain - for Ruby objects use ruby-ancestors, otherwise default chain
+        ancestors (if (satisfies? ruby-classes/RubyObject receiver)
+                    (ruby-classes/ruby-ancestors receiver)
+                    [class-name "Object" "Kernel" "BasicObject"])]
+    ;; Search through ancestor chain for the method
+    (loop [remaining-ancestors ancestors]
+      (if (empty? remaining-ancestors)
+        ::method-not-found
+        (let [current-class (first remaining-ancestors)
+              class-info (get @variables current-class)]
+          (if (and class-info (:methods class-info))
+            (let [methods @(:methods class-info)
+                  method-info (get methods method-name)]
+              (if method-info
+                ;; Found a user-defined method, execute it
+                (let [method-params (:parameters method-info)
+                      method-body (:body method-info)
+                      method-ast (or (:ast method-info) ast)
+                      local-vars (atom (merge @variables
+                                              {"self" receiver}
+                                              (zipmap method-params args)))]
+                  (interpret-expression method-ast method-body local-vars))
+                ;; Method not found in this class, try next ancestor
+                (recur (rest remaining-ancestors))))
+            ;; Class not found or has no methods, try next ancestor
+            (recur (rest remaining-ancestors))))))))
 
 ;; Helper functions for operator methods
 (defn- single-arg?
@@ -1193,17 +1237,19 @@
                  (let [filename-str (cond
                                       (string? filename) filename
                                       (satisfies? ruby-classes/RubyInspectable filename) (to-s filename)
-                                      :else (str filename))]
+                                      :else (str filename))
+                       absolute-path (.getCanonicalPath (java.io.File. filename-str))]
                    (try
-                     (let [source (slurp filename-str)
+                     (let [source (slurp absolute-path)
                            load-ast (parser/parse (tokenizer/tokenize source))
                            load-root-id (parser/find-root-entity load-ast)
                            statement-ids (when (= :program (parser/get-node-type load-ast load-root-id))
                                            (parser/get-children load-ast load-root-id))]
-                       ;; Execute with shared variables but use loaded file's AST for proper block handling
-                       (if statement-ids
-                         (run! #(interpret-expression load-ast % variables) statement-ids)
-                         (interpret-expression load-ast load-root-id variables))
+                       ;; Execute with current file bound for require_relative support
+                       (binding [kernel/*current-file* absolute-path]
+                         (if statement-ids
+                           (run! #(interpret-expression load-ast % variables) statement-ids)
+                           (interpret-expression load-ast load-root-id variables)))
                        true)
                      (catch java.io.FileNotFoundException _
                        (throw (ex-info "ruby-exception"
@@ -1229,6 +1275,51 @@
                                  {:type :ruby-exception
                                   :exception (ruby-classes/create-argument-error
                                               "wrong number of arguments (given 0, expected 1)")})))
+
+        "require_relative"
+        (if-let [relative-path (first args)]
+          (let [absolute-path (kernel/resolve-relative-path relative-path kernel/*current-file*)]
+            (if (kernel/already-required? absolute-path)
+              false  ; Already loaded, return false per Ruby semantics
+              (do
+                (kernel/mark-as-required! absolute-path)
+                (try
+                  (let [source (slurp absolute-path)
+                        load-ast (parser/parse (tokenizer/tokenize source))
+                        load-root-id (parser/find-root-entity load-ast)
+                        statement-ids (when (= :program (parser/get-node-type load-ast load-root-id))
+                                        (parser/get-children load-ast load-root-id))]
+                    ;; Execute with current file bound to the new file
+                    (binding [kernel/*current-file* absolute-path]
+                      (if statement-ids
+                        (run! #(interpret-expression load-ast % variables) statement-ids)
+                        (interpret-expression load-ast load-root-id variables)))
+                    true)
+                  (catch java.io.FileNotFoundException _
+                    (kernel/unmark-as-required! absolute-path)
+                    (throw (ex-info "ruby-exception"
+                                    {:type :ruby-exception
+                                     :exception (ruby-classes/create-load-error
+                                                 (str "cannot load such file -- " relative-path))})))
+                  (catch clojure.lang.ExceptionInfo e
+                    (if (= (:type (ex-data e)) :ruby-exception)
+                      (throw e)
+                      (do
+                        (kernel/unmark-as-required! absolute-path)
+                        (throw (ex-info "ruby-exception"
+                                        {:type :ruby-exception
+                                         :exception (ruby-classes/create-load-error
+                                                     (str "require_relative error: " (.getMessage e)))})))))
+                  (catch Exception e
+                    (kernel/unmark-as-required! absolute-path)
+                    (throw (ex-info "ruby-exception"
+                                    {:type :ruby-exception
+                                     :exception (ruby-classes/create-load-error
+                                                 (str "require_relative error: " (.getMessage e)))})))))))
+          (throw (ex-info "ruby-exception"
+                          {:type :ruby-exception
+                           :exception (ruby-classes/create-argument-error
+                                       "wrong number of arguments (given 0, expected 1)")})))
 
         "Rational" (let [num (or (first args) 0)
                            den (or (second args) 1)]
@@ -1273,9 +1364,23 @@
         ;; Check if it's a user-defined method
         (if-let [method-def (resolve-method-definition variables method-name)]
           (interpret-user-method ast entity-id variables method-def args)
-          (let [exception (ruby-classes/create-no-method-error
-                           (str "undefined method `" method-name "`"))]
-            (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))))
+          ;; Check if we're inside an instance context and this is a method on self
+          ;; In Ruby, bare method calls like `result(x)` inside a method are calls to self.result(x)
+          (if (and (contains? @variables "self")
+                   (let [self-obj (get @variables "self")]
+                     (and (map? self-obj)
+                          (:class-info self-obj)
+                          (contains? @(:methods (:class-info self-obj)) method-name))))
+            (let [self-obj (get @variables "self")
+                  result (try-instance-method-call self-obj method-name args variables ast)]
+              (if (= result ::method-not-found)
+                (let [exception (ruby-classes/create-no-method-error
+                                 (str "undefined method `" method-name "`"))]
+                  (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
+                result))
+            (let [exception (ruby-classes/create-no-method-error
+                             (str "undefined method `" method-name "`"))]
+              (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))))))
 
 (defn interpret-user-method
   "Interpret a call to user-defined method."
@@ -1319,6 +1424,22 @@
       (method-defined? variables var-name)
       (let [method-def (resolve-method-definition variables var-name)]
         (interpret-user-method ast entity-id variables method-def []))
+
+      ;; Check if we're inside an instance context and this is a method on self
+      ;; In Ruby, bare identifiers like `increment` inside a method are calls to self.increment
+      (and (contains? @variables "self")
+           (let [self-obj (get @variables "self")]
+             (and (map? self-obj)
+                  (:class-info self-obj)
+                  (contains? @(:methods (:class-info self-obj)) var-name))))
+      (let [self-obj (get @variables "self")
+            result (try-instance-method-call self-obj var-name [] variables ast)]
+        (if (= result ::method-not-found)
+          (let [exception (ruby-classes/create-name-error
+                           (str "undefined local variable or method `" var-name "`"))]
+            (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
+          result))
+
       :else
       (let [exception (ruby-classes/create-name-error
                        (str "undefined local variable or method `" var-name "`"))]
@@ -1406,6 +1527,7 @@
   (let [node-type (parser/get-node-type ast entity-id)]
     (case node-type
       :assignment-statement (interpret-assignment-with-context ast entity-id variables module-context)
+      :class-definition (interpret-class-definition-with-context ast entity-id variables module-context)
       ;; For all other expressions, use normal interpretation
       (interpret-expression ast entity-id variables))))
 
@@ -1944,6 +2066,58 @@
      (swap! variables assoc class-name class-info)
 
      nil)))
+
+(defn interpret-class-definition-with-context
+  "Interpret a class definition within a module context.
+   The class is stored with its qualified name (e.g., MyModule::MyClass)."
+  [ast entity-id variables module-context]
+  (let [class-name (parser/get-component ast entity-id :name)
+        qualified-class-name (if module-context
+                              (str module-context "::" class-name)
+                              class-name)
+        parent-class (parser/get-component ast entity-id :parent-class)
+        body-id (parser/get-component ast entity-id :body)
+        existing-class (or (get @variables qualified-class-name)
+                          (get @variables (str "class:" qualified-class-name)))
+        class-methods (if existing-class
+                        (:methods existing-class)
+                        (atom {}))
+        class-class-methods (if existing-class
+                              (:class-methods existing-class)
+                              (atom {}))
+        class-info (if existing-class
+                     (assoc existing-class
+                            :ast ast
+                            :body-id body-id)
+                     {:name qualified-class-name
+                      :parent-class parent-class
+                      :methods class-methods
+                      :class-methods class-class-methods
+                      :ast ast
+                      :body-id body-id})]
+    ;; Process class body
+    (when body-id
+      (let [method-statements (parser/get-children ast body-id)]
+        (doseq [method-id method-statements]
+          (let [method-type (parser/get-node-type ast method-id)]
+            (cond
+              (= method-type :method-definition)
+              (add-method-to-class class-methods ast method-id)
+
+              (= method-type :class-method-definition)
+              (add-method-to-class class-class-methods ast method-id)
+
+              (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
+              (process-attr-statement method-type class-methods ast method-id)
+
+              ;; Skip any other statements during class definition
+              :else nil)))))
+
+    ;; Store class with qualified name
+    (swap! variables assoc (str "class:" qualified-class-name) class-info)
+    (swap! variables assoc qualified-class-name class-info)
+
+    nil))
 
 (defn interpret-instance-variable-access
   "Interpret instance variable access (@var)."
