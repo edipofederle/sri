@@ -56,6 +56,14 @@ rspec:
 		lein run test_rspec_capabilities.rb $(FILE); \
 	fi
 
+# Run Ruby specs from ruby-specs-to-run.edn
+ruby-specs:
+	@for spec in $$(clj -M -e '(doseq [s (-> "ruby-specs-to-run.edn" slurp clojure.edn/read-string)] (println (:path s)))'); do \
+		echo ""; \
+		echo "=== Running: $$spec ==="; \
+		$(MAKE) rspec FILE="$$spec"; \
+	done
+
 # Quick development cycle - just run JVM tests
 dev: test-jvm
 
@@ -80,3 +88,4 @@ help:
 	@echo "  make run FILE=x.rb       - Run Ruby file with JVM"
 	@echo "  make run-native FILE=x.rb - Run Ruby file with native binary"
 	@echo "  make rspec FILE=spec.rb  - Run RSpec-style test file"
+	@echo "  make ruby-specs          - Run specs from ruby-specs-to-run.edn"

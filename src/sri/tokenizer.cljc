@@ -830,11 +830,10 @@
           (= next-ch \W) (read-word-array state true)   ; %W - with interpolation
           (= next-ch \q) (read-percent-string state false) ; %q - no interpolation
           (= next-ch \Q) (read-percent-string state true)  ; %Q - with interpolation
-          ;; Bare % followed by valid string delimiter (not whitespace, not =)
+          ;; Bare % followed by valid string delimiter (not whitespace)
           (and next-ch
                (not (Character/isLetterOrDigit ^char next-ch))
-               (not (Character/isWhitespace ^char next-ch))
-               (not (= next-ch \=)))  ; %= is modulo-assign operator
+               (not (Character/isWhitespace ^char next-ch)))
           (read-bare-percent-string state)
           :else (read-operator state)))
 
