@@ -220,10 +220,14 @@
     (ruby-string/create-string result)))
 
 (defn interpolate-string
-  "Interpolate #{} expressions in a string."
+  "Interpolate #{} expressions and simple #@var/#$var in a string."
   [content variables]
-  (let [;; Simple regex to find #{...} patterns
-        pattern #"\#\{([^}]+)\}"
+  (let [;; Pattern to find:
+        ;; 1. #{...} - full interpolation with curly braces
+        ;; 2. #@var_name - simple instance variable interpolation
+        ;; 3. #$var_name - simple global variable interpolation
+        ;; Variable names: start with letter/underscore, followed by alphanumeric/underscore
+        pattern #"\#\{([^}]+)\}|\#(@[a-zA-Z_][a-zA-Z0-9_]*)|\#(\$[a-zA-Z_][a-zA-Z0-9_]*)"
         matcher (re-matcher pattern content)]
     (loop [result ""
            last-end 0]
@@ -231,12 +235,26 @@
         (let [start (.start matcher)
               end (.end matcher)
               before-match (subs content last-end start)
-              expr-source (.group matcher 1)
-              ;; Parse and evaluate the expression
-              expr-tokens (sri.tokenizer/tokenize expr-source)
-              temp-state (parser/create-parse-state expr-tokens)
-              [final-state expr-id] (parser/parse-expression temp-state)
-              raw-result (interpret-expression (:ast final-state) expr-id variables)
+              ;; Check which capture group matched
+              curly-expr (.group matcher 1)     ; #{expr}
+              instance-var (.group matcher 2)   ; @var
+              global-var (.group matcher 3)     ; $var
+              raw-result (cond
+                           ;; Full interpolation #{expr}
+                           curly-expr
+                           (let [expr-tokens (sri.tokenizer/tokenize curly-expr)
+                                 temp-state (parser/create-parse-state expr-tokens)
+                                 [final-state expr-id] (parser/parse-expression temp-state)]
+                             (interpret-expression (:ast final-state) expr-id variables))
+                           ;; Simple instance variable #@var
+                           instance-var
+                           (let [self (get @variables "self")]
+                             (if (and self (:instance-variables self))
+                               (get @(:instance-variables self) instance-var)
+                               nil))
+                           ;; Simple global variable #$var
+                           global-var
+                           (get @global-variables global-var))
               ;; Convert result to string - use to-s for Ruby objects, str for others
               expr-result (cond
                            (nil? raw-result) ""

@@ -1,5 +1,8 @@
 (ns sri.tokenizer)
 
+;; Forward declarations for functions defined later
+(declare read-percent-string read-bare-percent-string read-percent-string-content)
+
 (defrecord Token [type value line column])
 
 (def keywords
@@ -394,21 +397,58 @@
 (declare read-interpolation-expression read-word-array)
 
 (defn string-contains-interpolation?
-  "Check if a string contains #{...} interpolation."
+  "Check if a string contains #{...}, #@var, or #$var interpolation."
   [state quote-char]
   (loop [current-state state]
     (let [ch (peek-char current-state)]
       (cond
         (nil? ch) false
         (= ch quote-char) false
-        (and (= ch \#) 
+        ;; Check for #{
+        (and (= ch \#)
              (let [[_ next-state] (next-char current-state)]
                (and next-state (= (peek-char next-state) \{)))) true
-        :else 
+        ;; Check for #@ followed by valid identifier start
+        (and (= ch \#)
+             (let [[_ next-state] (next-char current-state)]
+               (and next-state
+                    (= (peek-char next-state) \@)
+                    (let [[_ after-at] (next-char next-state)]
+                      (and after-at
+                           (let [id-ch (peek-char after-at)]
+                             (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_))))))))) true
+        ;; Check for #$ followed by valid identifier start
+        (and (= ch \#)
+             (let [[_ next-state] (next-char current-state)]
+               (and next-state
+                    (= (peek-char next-state) \$)
+                    (let [[_ after-dollar] (next-char next-state)]
+                      (and after-dollar
+                           (let [id-ch (peek-char after-dollar)]
+                             (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_))))))))) true
+        :else
         (let [[_ next-state] (next-char current-state)]
           (if next-state
             (recur next-state)
             false))))))
+
+(defn read-simple-interpolation-var
+  "Read a simple interpolation variable like @var or $var (starting from @ or $).
+   Returns [var-string end-state]."
+  [state]
+  (let [sb (StringBuilder.)]
+    ;; Read the @ or $ prefix
+    (let [[prefix-ch state-after-prefix] (next-char state)]
+      (.append sb prefix-ch)
+      ;; Now read the variable name (alphanumeric and underscore)
+      (loop [current-state state-after-prefix]
+        (let [ch (peek-char current-state)]
+          (if (and ch (or (Character/isLetterOrDigit ^char ch) (= ch \_)))
+            (let [[consumed-ch new-state] (next-char current-state)]
+              (.append sb consumed-ch)
+              (recur new-state))
+            ;; End of variable name
+            [(.toString sb) current-state]))))))
 
 (defn read-interpolated-string-parts
   "Read parts of an interpolated string, separating text and expressions."
@@ -429,17 +469,51 @@
             [(create-token :interpolated-string parts start-line start-column)
              final-state])
 
-          (and (= ch \#) 
+          (and (= ch \#)
                (let [[_ next-state] (next-char current-state)]
                  (and next-state (= (peek-char next-state) \{))))
           ;; Found interpolation start #{
-          (let [;; Skip #{ 
+          (let [;; Skip #{
                 [_ state-after-hash] (next-char current-state)
                 [_ state-after-brace] (next-char state-after-hash)
                 ;; Read expression until }
                 [expr-source expr-end-state] (read-interpolation-expression state-after-brace)]
-            (recur expr-end-state 
+            (recur expr-end-state
                    (conj parts {:type :expression :source expr-source})))
+
+          ;; Simple instance variable interpolation: #@var (requires valid identifier after @)
+          (and (= ch \#)
+               (let [[_ next-state] (next-char current-state)]
+                 (and next-state
+                      (= (peek-char next-state) \@)
+                      ;; Check there's a valid identifier char after @
+                      (let [[_ after-at] (next-char next-state)]
+                        (and after-at
+                             (let [id-ch (peek-char after-at)]
+                               (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_)))))))))
+          (let [;; Skip #
+                [_ state-after-hash] (next-char current-state)
+                ;; Read @variable_name
+                [var-name end-state] (read-simple-interpolation-var state-after-hash)]
+            (recur end-state
+                   (conj parts {:type :expression :source var-name})))
+
+          ;; Simple global variable interpolation: #$var (requires valid identifier after $)
+          (and (= ch \#)
+               (let [[_ next-state] (next-char current-state)]
+                 (and next-state
+                      (= (peek-char next-state) \$)
+                      ;; Check there's a valid identifier char after $
+                      (let [[_ after-dollar] (next-char next-state)]
+                        (and after-dollar
+                             (let [id-ch (peek-char after-dollar)]
+                               (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_)))))))))
+          (let [;; Skip #
+                [_ state-after-hash] (next-char current-state)
+                ;; Read $variable_name
+                [var-name end-state] (read-simple-interpolation-var state-after-hash)]
+            (recur end-state
+                   (conj parts {:type :expression :source var-name})))
 
           :else
           ;; Regular character - add to text part
@@ -749,15 +823,141 @@
       (read-string-literal state ch)
 
       (= ch \%)
-      ;; Check for %w() and %W() word arrays
+      ;; Check for %w() and %W() word arrays, %q(), %Q(), or bare % strings
       (let [next-ch (peek-char (update state :pos inc))]
-        (cond 
+        (cond
           (= next-ch \w) (read-word-array state false)  ; %w - no interpolation
           (= next-ch \W) (read-word-array state true)   ; %W - with interpolation
+          (= next-ch \q) (read-percent-string state false) ; %q - no interpolation
+          (= next-ch \Q) (read-percent-string state true)  ; %Q - with interpolation
+          ;; Bare % followed by valid string delimiter (not whitespace, not =)
+          (and next-ch
+               (not (Character/isLetterOrDigit ^char next-ch))
+               (not (Character/isWhitespace ^char next-ch))
+               (not (= next-ch \=)))  ; %= is modulo-assign operator
+          (read-bare-percent-string state)
           :else (read-operator state)))
 
       :else
       (read-operator state))))
+
+(defn get-closing-delimiter
+  "Get the closing delimiter for a given opening delimiter."
+  [open-ch]
+  (case open-ch
+    \( \)
+    \[ \]
+    \{ \}
+    \< \>
+    open-ch)) ; For other delimiters, use the same character
+
+(defn read-bare-percent-string
+  "Read a bare % string like %(hello) or %^hello^ - always with interpolation."
+  [state]
+  (let [start-line (:line state)
+        start-column (:column state)
+        ;; Skip %
+        [_ state-after-percent] (next-char state)
+        ;; Get the delimiter
+        delimiter-ch (peek-char state-after-percent)
+        closing-delimiter (get-closing-delimiter delimiter-ch)
+        [_ state-after-open] (next-char state-after-percent)]
+    ;; Read string content with interpolation support
+    (read-percent-string-content state-after-open closing-delimiter true start-line start-column)))
+
+(defn read-percent-string
+  "Read a %q() or %Q() string literal."
+  [state with-interpolation?]
+  (let [start-line (:line state)
+        start-column (:column state)
+        ;; Skip %q or %Q
+        [_ state-after-percent] (next-char state)
+        [_ state-after-q] (next-char state-after-percent)
+        ;; Get the delimiter
+        delimiter-ch (peek-char state-after-q)
+        closing-delimiter (get-closing-delimiter delimiter-ch)
+        [_ state-after-open] (next-char state-after-q)]
+    (read-percent-string-content state-after-open closing-delimiter with-interpolation? start-line start-column)))
+
+(defn read-percent-string-content
+  "Read the content of a percent string until the closing delimiter."
+  [state closing-delimiter with-interpolation? start-line start-column]
+  (if with-interpolation?
+    ;; With interpolation - collect parts like interpolated strings
+    (loop [current-state state
+           parts []]
+      (let [ch (peek-char current-state)]
+        (cond
+          (nil? ch)
+          (throw (ex-info "Unterminated percent string literal"
+                         {:line start-line :column start-column}))
+
+          (= ch closing-delimiter)
+          (let [[_ final-state] (next-char current-state)]
+            [(create-token :interpolated-string parts start-line start-column)
+             final-state])
+
+          ;; Interpolation #{
+          (and (= ch \#)
+               (let [[_ next-state] (next-char current-state)]
+                 (and next-state (= (peek-char next-state) \{))))
+          (let [[_ state-after-hash] (next-char current-state)
+                [_ state-after-brace] (next-char state-after-hash)
+                [expr-source expr-end-state] (read-interpolation-expression state-after-brace)]
+            (recur expr-end-state
+                   (conj parts {:type :expression :source expr-source})))
+
+          ;; Simple instance variable interpolation: #@var
+          (and (= ch \#)
+               (let [[_ next-state] (next-char current-state)]
+                 (and next-state
+                      (= (peek-char next-state) \@)
+                      (let [[_ after-at] (next-char next-state)]
+                        (and after-at
+                             (let [id-ch (peek-char after-at)]
+                               (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_)))))))))
+          (let [[_ state-after-hash] (next-char current-state)
+                [var-name end-state] (read-simple-interpolation-var state-after-hash)]
+            (recur end-state
+                   (conj parts {:type :expression :source var-name})))
+
+          ;; Simple global variable interpolation: #$var
+          (and (= ch \#)
+               (let [[_ next-state] (next-char current-state)]
+                 (and next-state
+                      (= (peek-char next-state) \$)
+                      (let [[_ after-dollar] (next-char next-state)]
+                        (and after-dollar
+                             (let [id-ch (peek-char after-dollar)]
+                               (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_)))))))))
+          (let [[_ state-after-hash] (next-char current-state)
+                [var-name end-state] (read-simple-interpolation-var state-after-hash)]
+            (recur end-state
+                   (conj parts {:type :expression :source var-name})))
+
+          :else
+          (let [[consumed-ch new-state] (next-char current-state)
+                last-part (last parts)]
+            (if (string? last-part)
+              (recur new-state (conj (pop parts) (str last-part consumed-ch)))
+              (recur new-state (conj parts (str consumed-ch))))))))
+    ;; Without interpolation - just read until delimiter
+    (loop [current-state state
+           content ""]
+      (let [ch (peek-char current-state)]
+        (cond
+          (nil? ch)
+          (throw (ex-info "Unterminated percent string literal"
+                         {:line start-line :column start-column}))
+
+          (= ch closing-delimiter)
+          (let [[_ final-state] (next-char current-state)]
+            [(create-token :string content start-line start-column)
+             final-state])
+
+          :else
+          (let [[consumed-ch new-state] (next-char current-state)]
+            (recur new-state (str content consumed-ch))))))))
 
 (defn read-word-array
   "Read %w() or %W() word array literal."
