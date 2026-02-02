@@ -67,13 +67,55 @@
 
 (defn bind-method-parameters
   "Create a new variable scope with method parameters bound to arguments.
-   Block parameters (prefixed with &) are handled separately."
-  [variables params args]
+   Supports:
+   - Required parameters: bound in order
+   - Optional parameters (with defaults): use arg if provided, else evaluate default
+   - Splat parameters: collect remaining args into array
+   - Block parameters: handled separately"
+  [variables params args method-ast]
   (let [local-vars (atom @variables)
-        ;; Filter out block parameters for normal binding
-        regular-params (filter #(not (clojure.string/starts-with? % "&")) params)]
-    (doseq [[param arg] (map vector regular-params args)]
-      (swap! local-vars assoc param arg))
+        ;; Normalize params to maps if they're strings (backwards compatibility)
+        normalized-params (map (fn [p]
+                                (if (string? p)
+                                  {:name p :type (cond
+                                                   (clojure.string/starts-with? p "&") :block
+                                                   (clojure.string/starts-with? p "*") :splat
+                                                   :else :required)}
+                                  p))
+                              params)
+        ;; Separate different parameter types
+        required-params (filter #(= (:type %) :required) normalized-params)
+        optional-params (filter #(= (:type %) :optional) normalized-params)
+        splat-param (first (filter #(= (:type %) :splat) normalized-params))
+        ;; Calculate how many args go to required + optional
+        num-required (count required-params)
+        num-optional (count optional-params)
+        num-before-splat (+ num-required num-optional)
+        args-vec (vec args)]
+
+    ;; Bind required parameters
+    (doseq [[param arg] (map vector required-params args-vec)]
+      (swap! local-vars assoc (:name param) arg))
+
+    ;; Bind optional parameters (with defaults if arg not provided)
+    (doseq [[idx param] (map-indexed vector optional-params)]
+      (let [arg-idx (+ num-required idx)
+            arg-value (if (< arg-idx (count args-vec))
+                        (nth args-vec arg-idx)
+                        ;; Evaluate default value
+                        (when-let [default-id (:default param)]
+                          (interpret-expression method-ast default-id local-vars)))]
+        (swap! local-vars assoc (:name param) arg-value)))
+
+    ;; Bind splat parameter (collect remaining args into array)
+    (when splat-param
+      (let [splat-name (subs (:name splat-param) 1) ; Remove the * prefix
+            remaining-args (if (> (count args-vec) num-before-splat)
+                            (subvec args-vec num-before-splat)
+                            [])]
+        (swap! local-vars assoc splat-name
+               (apply sri.ruby-classes-new/create-array remaining-args))))
+
     local-vars))
 
 (defn execute-with-return-handling
@@ -692,13 +734,10 @@
 (defn handle-user-defined-class-method
   "Handle user-defined class methods with proper parameter binding and return handling."
   [method-info args variables ast]
-  (let [method-params (:parameters method-info)
+  (let [method-params (:params method-info)
         method-body (:body method-info)
         method-ast (:ast method-info)
-        method-vars (atom @variables)]
-    (when (and method-params (seq args))
-      (doseq [[param arg] (map vector method-params args)]
-        (swap! method-vars assoc param arg)))
+        method-vars (bind-method-parameters (atom @variables) method-params args method-ast)]
     (if method-body
       (try
         (interpret-expression method-ast method-body method-vars)
@@ -754,16 +793,13 @@
           class-info (:class-info instance)
           class-methods @(:methods class-info)]
       (if-let [method-info (get class-methods method-name)]
-        (let [method-params (:parameters method-info)
+        (let [method-params (:params method-info)
               method-body (:body method-info)
               method-ast (:ast method-info)
               ;; Create instance method scope with self and parameters
-              method-vars (atom (assoc @variables "self" instance))]
-
-          ;; Bind method parameters to arguments
-          (when (and method-params (seq args))
-            (doseq [[param arg] (map vector method-params args)]
-              (swap! method-vars assoc param arg)))
+              base-vars (atom (assoc @variables "self" instance))
+              ;; Use bind-method-parameters to properly handle all param types
+              method-vars (bind-method-parameters base-vars method-params args method-ast)]
 
           ;; Execute method body with return handling, or handle special generated methods
           (let [result (cond
@@ -856,12 +892,11 @@
                   method-info (get methods method-name)]
               (if method-info
                 ;; Found a user-defined method, execute it
-                (let [method-params (:parameters method-info)
+                (let [method-params (:params method-info)
                       method-body (:body method-info)
                       method-ast (or (:ast method-info) ast)
-                      local-vars (atom (merge @variables
-                                              {"self" receiver}
-                                              (zipmap method-params args)))]
+                      base-vars (atom (assoc @variables "self" receiver))
+                      local-vars (bind-method-parameters base-vars method-params args method-ast)]
                   (interpret-expression method-ast method-body local-vars))
                 ;; Method not found in this class, try next ancestor
                 (recur (rest remaining-ancestors))))
@@ -1100,16 +1135,13 @@
 
       ;; Call initialize method if it exists
       (if-let [initialize-method (get class-methods "initialize")]
-        (let [init-params (:parameters initialize-method)
+        (let [init-params (:params initialize-method)
               init-body (:body initialize-method)
               init-ast (:ast initialize-method)
               ;; Create instance variable scope with self reference
-              instance-vars (atom (assoc @variables "self" instance))]
-
-          ;; Bind parameters to arguments
-          (when (and init-params (seq args))
-            (doseq [[param arg] (map vector init-params args)]
-              (swap! instance-vars assoc param arg)))
+              base-vars (atom (assoc @variables "self" instance))
+              ;; Use bind-method-parameters for proper param handling
+              instance-vars (bind-method-parameters base-vars init-params args init-ast)]
 
           ;; Execute initialize method body
           (when init-body
@@ -1143,14 +1175,11 @@
             (if-let [proc-class (get @variables "Proc")]
               (if-let [method-info (get @(:methods proc-class) method-name)]
                 ;; Execute Proc method with lambda as self
-                (let [method-params (:parameters method-info)
+                (let [method-params (:params method-info)
                       method-body-id (:body method-info)  ;; Single entity ID, not a list
                       method-ast (:ast method-info)
-                      method-vars (atom (assoc @variables "self" receiver))]
-                  ;; Bind method parameters to arguments
-                  (when (and method-params (seq args))
-                    (doseq [[param arg] (map vector method-params args)]
-                      (swap! method-vars assoc param arg)))
+                      base-vars (atom (assoc @variables "self" receiver))
+                      method-vars (bind-method-parameters base-vars method-params args method-ast)]
                   ;; Execute method body with return handling (like interpret-user-method)
                   (execute-with-return-handling method-ast method-body-id method-vars))
                 ;; No method found on Proc class
@@ -1199,6 +1228,33 @@
 
       ;; Function call: method(args)
       (case method-name
+        ;; lambda and proc create a callable proc from a block
+        "lambda" (let [block-id (parser/get-component ast entity-id :block)]
+                   (if block-id
+                     (let [block-params (parser/get-component ast block-id :block-params)
+                           block-body (parser/get-component ast block-id :block-body)]
+                       {:type :lambda
+                        :params (or block-params [])
+                        :body block-body
+                        :ast ast
+                        :closure @variables})
+                     (let [exception (ruby-classes/create-argument-error
+                                      "tried to create Proc object without a block")]
+                       (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
+
+        "proc" (let [block-id (parser/get-component ast entity-id :block)]
+                 (if block-id
+                   (let [block-params (parser/get-component ast block-id :block-params)
+                         block-body (parser/get-component ast block-id :block-body)]
+                     {:type :lambda
+                      :params (or block-params [])
+                      :body block-body
+                      :ast ast
+                      :closure @variables})
+                   (let [exception (ruby-classes/create-argument-error
+                                    "tried to create Proc object without a block")]
+                     (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
+
         "puts" (apply ruby-classes/invoke-ruby-method (ruby-object/create-object) :puts args)
         "print" (apply ruby-classes/invoke-ruby-method (ruby-object/create-object) :print args)
         "p" (apply ruby-classes/invoke-ruby-method (ruby-object/create-object) :p args)
@@ -1224,11 +1280,17 @@
                            ;; Re-throw Ruby exceptions as-is so rescue can catch them
                            (if (= (:type (ex-data e)) :ruby-exception)
                              (throw e)
-                             (throw (ex-info (str "eval error: " (.getMessage e))
-                                            {:code code-str :original-error e}))))
+                             ;; Convert parse errors to SyntaxError
+                             (throw (ex-info "ruby-exception"
+                                            {:type :ruby-exception
+                                             :exception (ruby-classes/create-syntax-error
+                                                         (.getMessage e))}))))
                          (catch Exception e
-                           (throw (ex-info (str "eval error: " (.getMessage e))
-                                          {:code code-str :original-error e}))))
+                           ;; Convert other errors to SyntaxError
+                           (throw (ex-info "ruby-exception"
+                                          {:type :ruby-exception
+                                           :exception (ruby-classes/create-syntax-error
+                                                       (.getMessage e))}))))
                        (let [exception (ruby-classes/create-type-error
                                         (str "no implicit conversion of " (type arg) " into String"))]
                          (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
@@ -1387,27 +1449,38 @@
   [caller-ast entity-id variables method-def args]
   (let [{:keys [params body-id ast]} method-def
         method-ast ast ; Use the AST from the method definition record
-        local-vars (bind-method-parameters variables params args)
+        local-vars (bind-method-parameters variables params args method-ast)
         ;; Check if this method call has a block attached (in the CALLER's AST)
         block-id (parser/get-component caller-ast entity-id :block)
         ;; Check for block parameter (e.g., &block)
-        block-param (first (filter #(clojure.string/starts-with? % "&") params))]
-    ;; Store block context in local variables if a block is provided
-    (when block-id
-      (swap! local-vars assoc "__block_id" block-id)
-      (swap! local-vars assoc "__block_ast" caller-ast)
-      ;; If there's a &block parameter, convert block to a lambda
+        ;; Handle both string params (legacy) and map params (new format)
+        block-param (first (filter #(let [name (if (map? %) (:name %) %)]
+                                     (clojure.string/starts-with? name "&")) params))]
+    ;; Handle block parameter binding
+    (if block-id
+      ;; Block was provided - store context and convert to lambda if needed
+      (do
+        (swap! local-vars assoc "__block_id" block-id)
+        (swap! local-vars assoc "__block_ast" caller-ast)
+        ;; If there's a &block parameter, convert block to a lambda
+        (when block-param
+          (let [;; Get the parameter name, handling both string and map formats
+                raw-name (if (map? block-param) (:name block-param) block-param)
+                param-name (subs raw-name 1) ; Remove the & prefix
+                block-params (parser/get-component caller-ast block-id :block-params)
+                block-body-ids (parser/get-component caller-ast block-id :block-body)
+                ;; Create a lambda object from the block
+                lambda-obj {:type :lambda
+                            :params (or block-params [])
+                            :body block-body-ids
+                            :ast caller-ast
+                            :closure @local-vars}]
+            (swap! local-vars assoc param-name lambda-obj))))
+      ;; No block provided - bind block param to nil so it can be checked
       (when block-param
-        (let [param-name (subs block-param 1) ; Remove the & prefix
-              block-params (parser/get-component caller-ast block-id :block-params)
-              block-body-ids (parser/get-component caller-ast block-id :block-body)
-              ;; Create a lambda object from the block
-              lambda-obj {:type :lambda
-                          :params (or block-params [])
-                          :body block-body-ids
-                          :ast caller-ast
-                          :closure @local-vars}]
-          (swap! local-vars assoc param-name lambda-obj))))
+        (let [raw-name (if (map? block-param) (:name block-param) block-param)
+              param-name (subs raw-name 1)] ; Remove the & prefix
+          (swap! local-vars assoc param-name nil))))
     ;; Execute method body with return handling
     (execute-with-return-handling method-ast body-id local-vars)))
 
@@ -1937,7 +2010,7 @@
                       method-body (parser/get-component ast method-id :body)]
                   (swap! module-methods assoc method-name
                          {:name method-name
-                          :parameters method-params
+                          :params method-params
                           :body method-body
                           :module qualified-name
                           :ast ast}))
@@ -1949,7 +2022,7 @@
                       method-body (parser/get-component ast method-id :body)]
                   (swap! module-methods assoc method-name
                          {:name method-name
-                          :parameters method-params
+                          :params method-params
                           :body method-body
                           :module qualified-name
                           :ast ast}))
@@ -1984,7 +2057,7 @@
         method-body (parser/get-component ast method-id :body)]
     (swap! methods-atom assoc method-name
            {:name method-name
-            :parameters method-params
+            :params method-params
             :body method-body
             :ast ast})))
 
@@ -1993,7 +2066,7 @@
   [methods-atom attr-name]
   (swap! methods-atom assoc attr-name
          {:name attr-name
-          :parameters []
+          :params []
           :attr-getter true
           :attr-name attr-name}))
 
@@ -2002,7 +2075,7 @@
   [methods-atom attr-name]
   (swap! methods-atom assoc (str attr-name "=")
          {:name (str attr-name "=")
-          :parameters ["value"]
+          :params ["value"]
           :attr-setter true
           :attr-name attr-name}))
 

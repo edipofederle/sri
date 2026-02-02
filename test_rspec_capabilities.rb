@@ -63,8 +63,39 @@ class Expectation
   end
 end
 
-def expect(actual)
-  Expectation.new(actual)
+# expect(value) or expect { block }
+def expect(*args, &block)
+  if block
+    BlockExpectation.new(block)
+  else
+    Expectation.new(args[0])
+  end
+end
+
+class BlockExpectation
+  def initialize(block)
+    @block = block
+  end
+
+  def to(matcher)
+    error_raised = nil
+    begin
+      @block.call
+    rescue => e
+      error_raised = e
+    end
+
+    # For raise_error matcher
+    if error_raised
+      if matcher.matches?(error_raised)
+        true
+      else
+        raise(matcher.failure_message_for_wrong_error(error_raised))
+      end
+    else
+      raise(matcher.failure_message_for_no_error)
+    end
+  end
 end
 
 # --------------------------

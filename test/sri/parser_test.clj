@@ -682,7 +682,7 @@
     (let [[ast root-id] (parse-statement-string "def greet(name)\nputs(name)\nend")]
       (is (= :method-definition (parser/get-component ast root-id :node-type)))
       (is (= "greet" (parser/get-component ast root-id :name)))
-      (is (= ["name"] (parser/get-component ast root-id :parameters)))
+      (is (= [{:name "name" :type :required}] (parser/get-component ast root-id :parameters)))
       (let [body-id (parser/get-component ast root-id :body)]
         (is (= :block (parser/get-component ast body-id :node-type)))))
 
@@ -690,7 +690,7 @@
     (let [[ast root-id] (parse-statement-string "def add(x, y)\nx + y\nend")]
       (is (= :method-definition (parser/get-component ast root-id :node-type)))
       (is (= "add" (parser/get-component ast root-id :name)))
-      (is (= ["x" "y"] (parser/get-component ast root-id :parameters)))
+      (is (= [{:name "x" :type :required} {:name "y" :type :required}] (parser/get-component ast root-id :parameters)))
       (let [body-id (parser/get-component ast root-id :body)]
         (is (= :block (parser/get-component ast body-id :node-type)))
         (let [statements (parser/get-component ast body-id :statements)]
@@ -705,7 +705,7 @@
     (let [[ast root-id] (parse-statement-string "def factorial(n)\nif n <= 1\n1\nelse\nn * factorial(n - 1)\nend\nend")]
       (is (= :method-definition (parser/get-component ast root-id :node-type)))
       (is (= "factorial" (parser/get-component ast root-id :name)))
-      (is (= ["n"] (parser/get-component ast root-id :parameters)))
+      (is (= [{:name "n" :type :required}] (parser/get-component ast root-id :parameters)))
       (let [body-id (parser/get-component ast root-id :body)]
         (is (= :block (parser/get-component ast body-id :node-type)))
         (let [statements (parser/get-component ast body-id :statements)]
@@ -717,7 +717,7 @@
     (let [[ast root-id] (parse-statement-string "def process(data)\nvalidate(data)\nresult = transform(data)\nresult\nend")]
       (is (= :method-definition (parser/get-component ast root-id :node-type)))
       (is (= "process" (parser/get-component ast root-id :name)))
-      (is (= ["data"] (parser/get-component ast root-id :parameters)))
+      (is (= [{:name "data" :type :required}] (parser/get-component ast root-id :parameters)))
       (let [body-id (parser/get-component ast root-id :body)]
         (is (= :block (parser/get-component ast body-id :node-type)))
         (let [statements (parser/get-component ast body-id :statements)]
@@ -745,7 +745,7 @@
     (let [[ast root-id] (parse-statement-string "def foo(a); a + 2; end")]
       (is (= :method-definition (parser/get-component ast root-id :node-type)))
       (is (= "foo" (parser/get-component ast root-id :name)))
-      (is (= ["a"] (parser/get-component ast root-id :parameters)))
+      (is (= [{:name "a" :type :required}] (parser/get-component ast root-id :parameters)))
       (let [body-id (parser/get-component ast root-id :body)]
         (is (= :block (parser/get-component ast body-id :node-type)))
         (let [statements (parser/get-component ast body-id :statements)]

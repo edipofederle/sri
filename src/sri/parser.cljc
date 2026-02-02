@@ -481,10 +481,9 @@
     (match-token? state :operator "{")
     (let [[open-token state-after-open] (consume-token state)
           state-skip-newlines (skip-separators state-after-open)]
-      ;; Check if this is a block (has |) or hash (doesn't have | immediately)
-      (if (match-token? state-skip-newlines :operator "|")
-        ;; This is a block - parse parameters and body
-        (try
+      (try
+        (if (match-token? state-skip-newlines :operator "|")
+          ;; Block with parameters: { |x, y| body }
           (let [;; Skip the opening |
                 [_ state-after-pipe] (consume-token state-skip-newlines)
                 ;; Parse parameters until closing |
@@ -501,13 +500,20 @@
                                                :block-body body-statements
                                                :position {:line (:line open-token) :column (:column open-token)})]
             [(assoc final-state :ast new-ast) entity-id])
-          (catch Exception e
-            (binding [*out* *err*]
-              (println "DEBUG: Error parsing { } block:" (.getMessage e))
-              (flush))
-            nil))
-        ;; Not a block, return nil so parse-hash-literal can handle it
-        nil))
+          ;; Block without parameters: { body }
+          (let [;; Parse block body until closing }
+                [state-after-body body-statements] (parse-block-body state-skip-newlines)
+                ;; Skip the closing }
+                [_ final-state] (consume-token state-after-body)
+                ;; Create the block node
+                [new-ast entity-id] (create-node (:ast final-state) :block
+                                               :block-params []
+                                               :block-body body-statements
+                                               :position {:line (:line open-token) :column (:column open-token)})]
+            [(assoc final-state :ast new-ast) entity-id]))
+        (catch Exception e
+          ;; If parsing as block fails, return nil so parse-hash-literal can try
+          nil)))
 
     ;; Handle do end blocks
     (match-token? state :keyword "do")
@@ -1009,6 +1015,11 @@
                          (can-start-argument? (current-token state-after-id))
                          (parse-method-call state-after-id nil identifier-value id-token)
 
+                         ;; Check for method call with block but no arguments (e.g., expect { code } or lambda do code end)
+                         (or (match-token? state-after-id :operator "{")
+                             (match-token? state-after-id :keyword "do"))
+                         (parse-method-call state-after-id nil identifier-value id-token)
+
                          ;; Otherwise, treat as regular identifier
                          :else
                          (let [[new-ast entity-id] (create-node (:ast state-after-id) :identifier
@@ -1465,7 +1476,11 @@
 
 (defn parse-parameter-list
   "Parse a comma-separated parameter list enclosed in parentheses.
-   Supports block parameters with & prefix (e.g., &block)."
+   Supports:
+   - Regular parameters: param
+   - Default values: param = value
+   - Splat parameters: *args
+   - Block parameters: &block"
   [state]
   (if (match-token? state :operator "(")
     (let [[_ state-after-paren] (consume-token state)]
@@ -1480,17 +1495,19 @@
             (let [[_ state-after-amp] (consume-token current-state)
                   [param-token state-after-param] (consume-token state-after-amp)
                   block-param-name (str "&" (:value param-token))
-                  new-params (conj params block-param-name)]
+                  new-params (conj params {:name block-param-name :type :block})]
               (if (match-token? state-after-param :operator ")")
                 (let [[_ final-state] (consume-token state-after-param)]
                   [final-state new-params])
                 (throw (ex-info "Block parameter must be last in parameter list"
                                {:token (current-token state-after-param)}))))
 
-            ;; Regular parameter
-            (match-token? current-state :identifier)
-            (let [[param-token state-after-param] (consume-token current-state)
-                  new-params (conj params (:value param-token))]
+            ;; Splat parameter: *args
+            (match-token? current-state :operator "*")
+            (let [[_ state-after-star] (consume-token current-state)
+                  [param-token state-after-param] (consume-token state-after-star)
+                  splat-param-name (str "*" (:value param-token))
+                  new-params (conj params {:name splat-param-name :type :splat})]
               (cond
                 (match-token? state-after-param :operator ",")
                 (let [[_ state-after-comma] (consume-token state-after-param)]
@@ -1503,6 +1520,44 @@
                 :else
                 (throw (ex-info "Expected ',' or ')' in parameter list"
                                {:token (current-token state-after-param)}))))
+
+            ;; Regular or default parameter
+            (match-token? current-state :identifier)
+            (let [[param-token state-after-param] (consume-token current-state)]
+              ;; Check for default value
+              (if (match-token? state-after-param :operator "=")
+                ;; Parameter with default value
+                (let [[_ state-after-eq] (consume-token state-after-param)
+                      [state-after-default default-id] (parse-expression state-after-eq)
+                      new-params (conj params {:name (:value param-token)
+                                               :type :optional
+                                               :default default-id})]
+                  (cond
+                    (match-token? state-after-default :operator ",")
+                    (let [[_ state-after-comma] (consume-token state-after-default)]
+                      (recur state-after-comma new-params))
+
+                    (match-token? state-after-default :operator ")")
+                    (let [[_ final-state] (consume-token state-after-default)]
+                      [final-state new-params])
+
+                    :else
+                    (throw (ex-info "Expected ',' or ')' in parameter list"
+                                   {:token (current-token state-after-default)}))))
+                ;; Regular parameter without default
+                (let [new-params (conj params {:name (:value param-token) :type :required})]
+                  (cond
+                    (match-token? state-after-param :operator ",")
+                    (let [[_ state-after-comma] (consume-token state-after-param)]
+                      (recur state-after-comma new-params))
+
+                    (match-token? state-after-param :operator ")")
+                    (let [[_ final-state] (consume-token state-after-param)]
+                      [final-state new-params])
+
+                    :else
+                    (throw (ex-info "Expected ',' or ')' in parameter list"
+                                   {:token (current-token state-after-param)}))))))
 
             :else
             (throw (ex-info "Expected parameter name"
