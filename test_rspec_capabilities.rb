@@ -1,19 +1,42 @@
 $test_results = []
 $before_blocks = []
+$after_blocks = []
+
+# ScratchPad for ruby/spec tests
+class ScratchPad
+  def self.record(value)
+    $scratch_pad_value = value
+  end
+
+  def self.recorded
+    $scratch_pad_value
+  end
+
+  def self.<<(item)
+    $scratch_pad_value << item
+  end
+
+  def self.clear
+    $scratch_pad_value = nil
+  end
+end
 
 def describe(description)
   puts("Describe: #{description}")
-  # Save current before blocks
+  # Save current before/after blocks
   saved_before_blocks = $before_blocks
+  saved_after_blocks = $after_blocks
   $before_blocks = []
+  $after_blocks = []
   begin
     yield
   rescue => e
     puts("  ERROR in describe block: #{e.message}")
     $test_results << "ERROR"
   end
-  # Restore previous before blocks
+  # Restore previous before/after blocks
   $before_blocks = saved_before_blocks
+  $after_blocks = saved_after_blocks
 end
 
 def before(scope, &block)
@@ -21,7 +44,14 @@ def before(scope, &block)
   $before_blocks << block
 end
 
+def after(scope, &block)
+  # Store the block to run after each test
+  $after_blocks << block
+end
+
 def it(description)
+  test_result = nil
+  test_error = nil
   begin
     # Run all before blocks first
     before_failed = false
@@ -31,19 +61,39 @@ def it(description)
         $before_blocks[i].call
       rescue => be
         before_failed = true
-        $test_results << "ERROR"
-        puts("  It: #{description} (error in before) - #{be.message}")
+        test_result = "ERROR"
+        test_error = "error in before: #{be.message}"
       end
       i = i + 1
     end
     if !before_failed
       yield
-      $test_results << "PASS"
-      puts("  It: #{description} (pass)")
+      test_result = "PASS"
     end
   rescue => e
-    $test_results << "FAIL"
-    puts("  It: #{description} (fail) - #{e.message}")
+    test_result = "FAIL"
+    test_error = e.message
+  end
+
+  # Run all after blocks (regardless of test result)
+  i = 0
+  while i < $after_blocks.length
+    begin
+      $after_blocks[i].call
+    rescue => ae
+      puts("  It: #{description} (error in after) - #{ae.message}")
+    end
+    i = i + 1
+  end
+
+  # Record and report the result
+  $test_results << test_result
+  if test_result == "PASS"
+    puts("  It: #{description} (pass)")
+  elsif test_result == "FAIL"
+    puts("  It: #{description} (fail) - #{test_error}")
+  elsif test_result == "ERROR"
+    puts("  It: #{description} (#{test_error})")
   end
 end
 

@@ -2,4 +2,9 @@
  {:path "spec/language/string_spec.rb"}
  {:path "spec/language/array_spec.rb"}
  {:path "spec/language/and_spec.rb"}
- {:path "spec/language/or_spec.rb"}]
+ {:path "spec/language/or_spec.rb"}
+ {:path "spec/language/hash_spec.rb"}
+ {:path "spec/language/def_spec.rb"}
+ {:path "spec/language/if_spec.rb"}
+ {:path "spec/language/for_spec.rb"}
+ {:path "spec/language/while_spec.rb"}]

@@ -323,7 +323,7 @@
                                           :position {:line (:line token) :column (:column token)})]
       [(assoc new-state :ast new-ast) entity-id])))
 
-(declare parse-expression parse-statement parse-primary parse-case-statement)
+(declare parse-expression parse-statement parse-primary parse-case-statement parse-multiple-assignment-statement parse-if-statement)
 
 (defn can-start-argument?
   "Check if a token can start an argument (for parenthesis-less method calls)."
@@ -811,6 +811,7 @@
       (parse-hash-literal state)
       (parse-case-statement state)
       (parse-loop-statement state)
+      (parse-if-statement state)
       (when (match-token? state :instance-variable)
         (let [[var-token state-after-var] (consume-token state)
               [new-ast entity-id] (create-node (:ast state-after-var) :instance-variable-access
@@ -845,10 +846,26 @@
                                                   :value nil
                                                   :position {:line (:line (current-token state)) :column (:column (current-token state))})]
               [(assoc state-after-close :ast new-ast) entity-id])
-            ;; Non-empty parentheses - parse expression
-            (let [[state expr-id] (parse-expression state-after-open)
-                  [_ state] (expect-token state :operator ")")]
-              [state expr-id]))))))
+            ;; Check for multiple assignment pattern: (a, b = expr)
+            (let [is-multi-assign? (and (match-token? state-after-open :identifier)
+                                        (loop [pos (inc (:pos state-after-open))]
+                                          (if (>= pos (count (:tokens state-after-open)))
+                                            false
+                                            (let [token (nth (:tokens state-after-open) pos)]
+                                              (cond
+                                                (and (= (:type token) :operator) (= (:value token) ",")) true
+                                                (and (= (:type token) :operator) (= (:value token) "=")) false
+                                                (and (= (:type token) :operator) (= (:value token) ")")) false
+                                                :else (recur (inc pos)))))))]
+              (if is-multi-assign?
+                ;; Parse as multiple assignment inside parentheses
+                (let [[state-after-assign assign-id] (parse-multiple-assignment-statement state-after-open)
+                      [_ final-state] (expect-token state-after-assign :operator ")")]
+                  [final-state assign-id])
+                ;; Non-empty parentheses - parse expression
+                (let [[state expr-id] (parse-expression state-after-open)
+                      [_ state] (expect-token state :operator ")")]
+                  [state expr-id]))))))))
 
 (defn parse-qualified-identifier
   "Parse a qualified identifier like Module::Class."
@@ -1148,6 +1165,7 @@
             [(assoc current-state :ast new-ast) block-id])
 
           (or (match-token? current-state :keyword "else")
+              (match-token? current-state :keyword "elsif")
               (match-token? current-state :keyword "rescue")
               (match-token? current-state :keyword "ensure"))
           (let [new-ast (set-component (:ast current-state) block-id :statements statements)]
@@ -1163,29 +1181,65 @@
             (recur state-after-newlines (conj statements stmt-id))))))))
 
 
+(defn- parse-elsif-chain
+  "Parse elsif/else/end chain after the then-branch of an if statement.
+   Returns [state else-branch-id-or-nil expects-end?]"
+  [state]
+  (cond
+    ;; elsif becomes a nested if-statement as the else branch
+    (match-token? state :keyword "elsif")
+    (let [[_ state-after-elsif] (consume-token state)
+          [state-after-condition condition-id] (parse-expression state-after-elsif)
+          state-skip-newlines (skip-separators state-after-condition)
+          [state-after-then then-id] (parse-block state-skip-newlines)
+          ;; Recursively parse more elsif/else/end
+          [state-after-chain else-id] (parse-elsif-chain state-after-then)
+          ;; Create nested if-statement node
+          [new-ast entity-id] (if else-id
+                                (create-node (:ast state-after-chain) :if-statement
+                                           :condition condition-id
+                                           :then-branch then-id
+                                           :else-branch else-id)
+                                (create-node (:ast state-after-chain) :if-statement
+                                           :condition condition-id
+                                           :then-branch then-id))]
+      [(assoc state-after-chain :ast new-ast) entity-id])
+
+    ;; else branch
+    (match-token? state :keyword "else")
+    (let [[_ state-after-else] (consume-token state)
+          [state-after-else-block else-id] (parse-block state-after-else)
+          [_ final-state] (expect-token state-after-else-block :keyword "end")]
+      [final-state else-id])
+
+    ;; end - no else branch
+    (match-token? state :keyword "end")
+    (let [[_ final-state] (consume-token state)]
+      [final-state nil])
+
+    :else
+    (throw (ex-info "Expected 'elsif', 'else', or 'end'" {:token (current-token state)}))))
+
 (defn parse-if-statement
-  "Parse an if/else statement."
+  "Parse an if/elsif/else statement."
   [state]
   (when (match-token? state :keyword "if")
     (let [[_ state-after-if] (consume-token state)
           [state-after-condition condition-id] (parse-expression state-after-if)
           state-skip-newlines (skip-separators state-after-condition)
           [state-after-then then-id] (parse-block state-skip-newlines)
-          _token (current-token state-after-then)]
-      (if (match-token? state-after-then :keyword "else")
-        (let [[_ state-after-else] (consume-token state-after-then)
-              [state-after-else-block else-id] (parse-block state-after-else)
-              [_ final-state] (expect-token state-after-else-block :keyword "end")
-              [new-ast entity-id] (create-node (:ast final-state) :if-statement
-                                             :condition condition-id
-                                             :then-branch then-id
-                                             :else-branch else-id)]
-          [(assoc final-state :ast new-ast) entity-id])
-        (let [[_ final-state] (expect-token state-after-then :keyword "end")
-              [new-ast entity-id] (create-node (:ast final-state) :if-statement
-                                             :condition condition-id
-                                             :then-branch then-id)]
-          [(assoc final-state :ast new-ast) entity-id])))))
+          ;; Parse elsif/else/end chain
+          [final-state else-id] (parse-elsif-chain state-after-then)
+          ;; Create the if-statement node
+          [new-ast entity-id] (if else-id
+                                (create-node (:ast final-state) :if-statement
+                                           :condition condition-id
+                                           :then-branch then-id
+                                           :else-branch else-id)
+                                (create-node (:ast final-state) :if-statement
+                                           :condition condition-id
+                                           :then-branch then-id))]
+      [(assoc final-state :ast new-ast) entity-id])))
 
 (defn parse-while-statement
   "Parse a while loop statement."
@@ -2007,7 +2061,8 @@
   (when-let [result (or (parse-module-definition state)
                         (parse-class-definition state)
                         (parse-method-definition state)
-                        (parse-if-statement state)
+                        ;; parse-if-statement is handled via parse-expression -> parse-primary -> parse-atomic
+                        ;; to allow method chaining like: if true; 123; end.should
                         (parse-while-statement state)
                         (parse-begin-statement state)
                         (parse-for-statement state)
