@@ -1502,24 +1502,40 @@
                 (throw (ex-info "Block parameter must be last in parameter list"
                                {:token (current-token state-after-param)}))))
 
-            ;; Splat parameter: *args
+            ;; Splat parameter: *args or * (unnamed)
             (match-token? current-state :operator "*")
-            (let [[_ state-after-star] (consume-token current-state)
-                  [param-token state-after-param] (consume-token state-after-star)
-                  splat-param-name (str "*" (:value param-token))
-                  new-params (conj params {:name splat-param-name :type :splat})]
-              (cond
-                (match-token? state-after-param :operator ",")
-                (let [[_ state-after-comma] (consume-token state-after-param)]
-                  (recur state-after-comma new-params))
+            (let [[_ state-after-star] (consume-token current-state)]
+              (if (match-token? state-after-star :identifier)
+                ;; Named splat: *args
+                (let [[param-token state-after-param] (consume-token state-after-star)
+                      splat-param-name (str "*" (:value param-token))
+                      new-params (conj params {:name splat-param-name :type :splat})]
+                  (cond
+                    (match-token? state-after-param :operator ",")
+                    (let [[_ state-after-comma] (consume-token state-after-param)]
+                      (recur state-after-comma new-params))
 
-                (match-token? state-after-param :operator ")")
-                (let [[_ final-state] (consume-token state-after-param)]
-                  [final-state new-params])
+                    (match-token? state-after-param :operator ")")
+                    (let [[_ final-state] (consume-token state-after-param)]
+                      [final-state new-params])
 
-                :else
-                (throw (ex-info "Expected ',' or ')' in parameter list"
-                               {:token (current-token state-after-param)}))))
+                    :else
+                    (throw (ex-info "Expected ',' or ')' in parameter list"
+                                   {:token (current-token state-after-param)}))))
+                ;; Unnamed splat: *
+                (let [new-params (conj params {:name nil :type :splat})]
+                  (cond
+                    (match-token? state-after-star :operator ",")
+                    (let [[_ state-after-comma] (consume-token state-after-star)]
+                      (recur state-after-comma new-params))
+
+                    (match-token? state-after-star :operator ")")
+                    (let [[_ final-state] (consume-token state-after-star)]
+                      [final-state new-params])
+
+                    :else
+                    (throw (ex-info "Expected ',' or ')' after unnamed splat parameter"
+                                   {:token (current-token state-after-star)}))))))
 
             ;; Regular or default parameter
             (match-token? current-state :identifier)

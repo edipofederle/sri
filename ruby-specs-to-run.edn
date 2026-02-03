@@ -1,4 +1,5 @@
 [{:path "spec/language/numbers_spec.rb"}
  {:path "spec/language/string_spec.rb"}
  {:path "spec/language/array_spec.rb"}
- {:path "spec/language/and_spec.rb"}]
+ {:path "spec/language/and_spec.rb"}
+ {:path "spec/language/or_spec.rb"}]

@@ -215,7 +215,7 @@ class ShouldNotExpectation
 end
 
 class Integer
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -225,7 +225,7 @@ class Integer
 end
 
 class Float
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -235,7 +235,7 @@ class Float
 end
 
 class String
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -245,7 +245,7 @@ class String
 end
 
 class Array
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -255,7 +255,7 @@ class Array
 end
 
 class NilClass
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -265,7 +265,7 @@ class NilClass
 end
 
 class TrueClass
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -275,7 +275,7 @@ class TrueClass
 end
 
 class FalseClass
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -285,7 +285,7 @@ class FalseClass
 end
 
 class Object
-  def should
+  def should(matcher = nil)
     ShouldExpectation.new(self)
   end
 
@@ -300,8 +300,9 @@ end
 # --------------------------
 
 class RaiseErrorMatcher
-  def initialize(expected_error)
+  def initialize(expected_error, expected_message = nil)
     @expected_error = expected_error
+    @expected_message = expected_message
     @has_expected = false
     # Store the class name for comparison
     if expected_error
@@ -311,13 +312,27 @@ class RaiseErrorMatcher
   end
 
   def matches?(actual_error)
+    # Check if error class matches
     if @has_expected
       # Compare class names as strings
-      actual_error.class.name == @expected_name
-    else
-      # Any error matches
-      true
+      if actual_error.class.name != @expected_name
+        return false
+      end
     end
+
+    # If message is specified, also check message
+    if @expected_message
+      actual_msg = actual_error.message.to_s
+      expected_msg = @expected_message.to_s
+      # Compare as strings
+      if actual_msg == expected_msg
+        return true
+      else
+        return false
+      end
+    end
+
+    true
   end
 
   def failure_message_for_no_error
@@ -325,12 +340,16 @@ class RaiseErrorMatcher
   end
 
   def failure_message_for_wrong_error(actual_error)
-    "expected #{@expected_name} but got #{actual_error.class.name}"
+    if @expected_message
+      "expected #{@expected_name} with message '#{@expected_message}' but got #{actual_error.class.name} with message '#{actual_error.message}'"
+    else
+      "expected #{@expected_name} but got #{actual_error.class.name}"
+    end
   end
 end
 
-def raise_error(expected_error)
-  RaiseErrorMatcher.new(expected_error)
+def raise_error(expected_error, expected_message = nil)
+  RaiseErrorMatcher.new(expected_error, expected_message)
 end
 
 # Proc class for lambda.should(matcher) support

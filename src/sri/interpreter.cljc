@@ -91,7 +91,24 @@
         num-required (count required-params)
         num-optional (count optional-params)
         num-before-splat (+ num-required num-optional)
-        args-vec (vec args)]
+        args-vec (vec args)
+        arg-count (count args-vec)
+
+        ;; Validate argument count
+        min-args num-required
+        max-args (if splat-param
+                   nil  ; unlimited with splat
+                   (+ num-required num-optional))
+        _ (when (or (< arg-count min-args)
+                    (and max-args (> arg-count max-args)))
+            (let [expected-str (if splat-param
+                                (str min-args "+")
+                                (if (= min-args max-args)
+                                  (str min-args)
+                                  (str min-args ".." max-args)))
+                  exception (ruby-classes/create-argument-error
+                             (str "wrong number of arguments (given " arg-count ", expected " expected-str ")"))]
+              (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))]
 
     ;; Bind required parameters
     (doseq [[param arg] (map vector required-params args-vec)]
@@ -108,7 +125,7 @@
         (swap! local-vars assoc (:name param) arg-value)))
 
     ;; Bind splat parameter (collect remaining args into array)
-    (when splat-param
+    (when (and splat-param (:name splat-param))
       (let [splat-name (subs (:name splat-param) 1) ; Remove the * prefix
             remaining-args (if (> (count args-vec) num-before-splat)
                             (subvec args-vec num-before-splat)
@@ -1475,7 +1492,7 @@
         ;; Check for block parameter (e.g., &block)
         ;; Handle both string params (legacy) and map params (new format)
         block-param (first (filter #(let [name (if (map? %) (:name %) %)]
-                                     (clojure.string/starts-with? name "&")) params))]
+                                     (and name (clojure.string/starts-with? name "&"))) params))]
     ;; Handle block parameter binding
     (if block-id
       ;; Block was provided - store context and convert to lambda if needed
