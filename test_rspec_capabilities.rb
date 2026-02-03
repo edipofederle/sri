@@ -140,6 +140,21 @@ def be_kind_of(expected_class)
   BeKindOfMatcher.new(expected_class)
 end
 
+# be_nil matcher
+class BeNilMatcher
+  def matches?(actual)
+    actual == nil
+  end
+
+  def failure_message(actual)
+    "expected #{actual.inspect} to be nil"
+  end
+end
+
+def be_nil
+  BeNilMatcher.new
+end
+
 # --------------------------
 # Example usage
 # --------------------------

@@ -58,11 +58,23 @@ rspec:
 
 # Run Ruby specs from ruby-specs-to-run.edn
 ruby-specs:
-	@for spec in $$(clj -M -e '(doseq [s (-> "ruby-specs-to-run.edn" slurp clojure.edn/read-string)] (println (:path s)))'); do \
+	@total_pass=0; total_fail=0; total_error=0; \
+	for spec in $$(clj -M -e '(doseq [s (-> "ruby-specs-to-run.edn" slurp clojure.edn/read-string)] (println (:path s)))'); do \
 		echo ""; \
 		echo "=== Running: $$spec ==="; \
-		$(MAKE) rspec FILE="$$spec"; \
-	done
+		output=$$(lein run test_rspec_capabilities.rb "$$spec" 2>&1); \
+		echo "$$output"; \
+		pass=$$(echo "$$output" | grep -oE '^[0-9]+ pass' | grep -oE '[0-9]+' || echo 0); \
+		fail=$$(echo "$$output" | grep -oE '[0-9]+ fail' | grep -oE '[0-9]+' || echo 0); \
+		error=$$(echo "$$output" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0); \
+		total_pass=$$((total_pass + pass)); \
+		total_fail=$$((total_fail + fail)); \
+		total_error=$$((total_error + error)); \
+	done; \
+	echo ""; \
+	echo "========================================"; \
+	echo "TOTAL: $$total_pass pass, $$total_fail fail, $$total_error error"; \
+	echo "========================================"
 
 # Quick development cycle - just run JVM tests
 dev: test-jvm

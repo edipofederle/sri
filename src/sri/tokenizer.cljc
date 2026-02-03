@@ -396,8 +396,11 @@
 
 (declare read-interpolation-expression read-word-array)
 
+(defn- valid-id-start? [ch]
+  (and ch (or (Character/isLetter ^char ch) (= ch \_))))
+
 (defn string-contains-interpolation?
-  "Check if a string contains #{...}, #@var, or #$var interpolation."
+  "Check if a string contains #{...}, #@var, #@@var, or #$var interpolation."
   [state quote-char]
   (loop [current-state state]
     (let [ch (peek-char current-state)]
@@ -408,24 +411,28 @@
         (and (= ch \#)
              (let [[_ next-state] (next-char current-state)]
                (and next-state (= (peek-char next-state) \{)))) true
-        ;; Check for #@ followed by valid identifier start
+        ;; Check for #@@ (class variable) followed by valid identifier start
         (and (= ch \#)
-             (let [[_ next-state] (next-char current-state)]
-               (and next-state
-                    (= (peek-char next-state) \@)
-                    (let [[_ after-at] (next-char next-state)]
-                      (and after-at
-                           (let [id-ch (peek-char after-at)]
-                             (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_))))))))) true
+             (let [[_ s1] (next-char current-state)]
+               (and s1 (= (peek-char s1) \@)
+                    (let [[_ s2] (next-char s1)]
+                      (and s2 (= (peek-char s2) \@)
+                           (let [[_ s3] (next-char s2)]
+                             (valid-id-start? (peek-char s3)))))))) true
+        ;; Check for #@ (instance variable) followed by valid identifier start (not another @)
+        (and (= ch \#)
+             (let [[_ s1] (next-char current-state)]
+               (and s1 (= (peek-char s1) \@)
+                    (let [[_ s2] (next-char s1)]
+                      (and s2
+                           (not (= (peek-char s2) \@))
+                           (valid-id-start? (peek-char s2))))))) true
         ;; Check for #$ followed by valid identifier start
         (and (= ch \#)
-             (let [[_ next-state] (next-char current-state)]
-               (and next-state
-                    (= (peek-char next-state) \$)
-                    (let [[_ after-dollar] (next-char next-state)]
-                      (and after-dollar
-                           (let [id-ch (peek-char after-dollar)]
-                             (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_))))))))) true
+             (let [[_ s1] (next-char current-state)]
+               (and s1 (= (peek-char s1) \$)
+                    (let [[_ s2] (next-char s1)]
+                      (valid-id-start? (peek-char s2)))))) true
         :else
         (let [[_ next-state] (next-char current-state)]
           (if next-state
@@ -433,22 +440,28 @@
             false))))))
 
 (defn read-simple-interpolation-var
-  "Read a simple interpolation variable like @var or $var (starting from @ or $).
+  "Read a simple interpolation variable like @var, @@var, or $var (starting from @ or $).
    Returns [var-string end-state]."
   [state]
   (let [sb (StringBuilder.)]
     ;; Read the @ or $ prefix
     (let [[prefix-ch state-after-prefix] (next-char state)]
       (.append sb prefix-ch)
-      ;; Now read the variable name (alphanumeric and underscore)
-      (loop [current-state state-after-prefix]
-        (let [ch (peek-char current-state)]
-          (if (and ch (or (Character/isLetterOrDigit ^char ch) (= ch \_)))
-            (let [[consumed-ch new-state] (next-char current-state)]
-              (.append sb consumed-ch)
-              (recur new-state))
-            ;; End of variable name
-            [(.toString sb) current-state]))))))
+      ;; Check for second @ (class variable @@var)
+      (let [current-state (if (and (= prefix-ch \@) (= (peek-char state-after-prefix) \@))
+                            (let [[second-at s] (next-char state-after-prefix)]
+                              (.append sb second-at)
+                              s)
+                            state-after-prefix)]
+        ;; Now read the variable name (alphanumeric and underscore)
+        (loop [cs current-state]
+          (let [ch (peek-char cs)]
+            (if (and ch (or (Character/isLetterOrDigit ^char ch) (= ch \_)))
+              (let [[consumed-ch new-state] (next-char cs)]
+                (.append sb consumed-ch)
+                (recur new-state))
+              ;; End of variable name
+              [(.toString sb) cs])))))))
 
 (defn read-interpolated-string-parts
   "Read parts of an interpolated string, separating text and expressions."
@@ -481,16 +494,29 @@
             (recur expr-end-state
                    (conj parts {:type :expression :source expr-source})))
 
-          ;; Simple instance variable interpolation: #@var (requires valid identifier after @)
+          ;; Simple class variable interpolation: #@@var (requires valid identifier after @@)
           (and (= ch \#)
-               (let [[_ next-state] (next-char current-state)]
-                 (and next-state
-                      (= (peek-char next-state) \@)
-                      ;; Check there's a valid identifier char after @
-                      (let [[_ after-at] (next-char next-state)]
-                        (and after-at
-                             (let [id-ch (peek-char after-at)]
-                               (and id-ch (or (Character/isLetter ^char id-ch) (= id-ch \_)))))))))
+               (let [[_ s1] (next-char current-state)]
+                 (and s1 (= (peek-char s1) \@)
+                      (let [[_ s2] (next-char s1)]
+                        (and s2 (= (peek-char s2) \@)
+                             (let [[_ s3] (next-char s2)]
+                               (valid-id-start? (peek-char s3))))))))
+          (let [;; Skip #
+                [_ state-after-hash] (next-char current-state)
+                ;; Read @@variable_name
+                [var-name end-state] (read-simple-interpolation-var state-after-hash)]
+            (recur end-state
+                   (conj parts {:type :expression :source var-name})))
+
+          ;; Simple instance variable interpolation: #@var (requires valid identifier after @, not another @)
+          (and (= ch \#)
+               (let [[_ s1] (next-char current-state)]
+                 (and s1 (= (peek-char s1) \@)
+                      (let [[_ s2] (next-char s1)]
+                        (and s2
+                             (not (= (peek-char s2) \@))
+                             (valid-id-start? (peek-char s2)))))))
           (let [;; Skip #
                 [_ state-after-hash] (next-char current-state)
                 ;; Read @variable_name

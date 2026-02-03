@@ -1039,6 +1039,7 @@
              (cond
                (number? receiver) (= receiver arg)
                (nil? receiver) (nil? arg)
+               (boolean? receiver) (= receiver arg)
                (string? receiver) (= receiver arg)
                (ruby-string? receiver) (ruby-classes/invoke-ruby-method receiver :== arg)
                (user-defined-instance? receiver) (= receiver arg)
@@ -1049,6 +1050,7 @@
              (cond
                (number? receiver) (not= receiver arg)
                (nil? receiver) (not (nil? arg))
+               (boolean? receiver) (not= receiver arg)
                (string? receiver) (not= receiver arg)
                (ruby-string? receiver) (ruby-classes/invoke-ruby-method receiver :!= arg)
                (user-defined-instance? receiver) (not= receiver arg)
@@ -2122,6 +2124,9 @@
            class-class-methods (if existing-class
                                 (:class-methods existing-class)
                                 (atom {}))
+           class-variables (if existing-class
+                            (:class-variables existing-class)
+                            (atom {}))
            class-info (if existing-class
                        (assoc existing-class
                               :ast ast
@@ -2130,10 +2135,13 @@
                         :parent-class parent-class
                         :methods class-methods
                         :class-methods class-class-methods
+                        :class-variables class-variables
                         :ast ast
                         :body-id body-id})]
      ;; Check if class already exists (for open classes / class reopening)
      (when body-id
+       ;; Set current class context for class variable access
+       (swap! variables assoc "__current_class__" class-info)
        (let [method-statements (parser/get-children ast body-id)]
          (doseq [method-id method-statements]
            (let [method-type (parser/get-node-type ast method-id)]
@@ -2147,8 +2155,17 @@
                (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
                (process-attr-statement method-type class-methods ast method-id)
 
+               ;; Handle class variable assignments
+               (= method-type :class-variable-assignment)
+               (let [var-name (parser/get-component ast method-id :variable)
+                     value-id (parser/get-component ast method-id :value)
+                     value (interpret-expression ast value-id variables)]
+                 (swap! class-variables assoc var-name value))
+
                ;; Skip any other statements during class definition
-               :else nil)))))
+               :else nil))))
+       ;; Clear current class context
+       (swap! variables dissoc "__current_class__"))
 
      ;; Store class in variables with "class:" prefix
      (swap! variables assoc (str "class:" class-name) class-info)
@@ -2176,6 +2193,9 @@
         class-class-methods (if existing-class
                               (:class-methods existing-class)
                               (atom {}))
+        class-variables (if existing-class
+                          (:class-variables existing-class)
+                          (atom {}))
         class-info (if existing-class
                      (assoc existing-class
                             :ast ast
@@ -2184,10 +2204,13 @@
                       :parent-class parent-class
                       :methods class-methods
                       :class-methods class-class-methods
+                      :class-variables class-variables
                       :ast ast
                       :body-id body-id})]
     ;; Process class body
     (when body-id
+      ;; Set current class context for class variable access
+      (swap! variables assoc "__current_class__" class-info)
       (let [method-statements (parser/get-children ast body-id)]
         (doseq [method-id method-statements]
           (let [method-type (parser/get-node-type ast method-id)]
@@ -2201,8 +2224,17 @@
               (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
               (process-attr-statement method-type class-methods ast method-id)
 
+              ;; Handle class variable assignments
+              (= method-type :class-variable-assignment)
+              (let [var-name (parser/get-component ast method-id :variable)
+                    value-id (parser/get-component ast method-id :value)
+                    value (interpret-expression ast value-id variables)]
+                (swap! class-variables assoc var-name value))
+
               ;; Skip any other statements during class definition
-              :else nil)))))
+              :else nil))))
+      ;; Clear current class context
+      (swap! variables dissoc "__current_class__"))
 
     ;; Store class with qualified name
     (swap! variables assoc (str "class:" qualified-class-name) class-info)
@@ -2254,6 +2286,56 @@
         value (interpret-expression ast value-id variables)]
     (swap! global-variables assoc var-name value)
     value))
+
+(defn- get-class-info-for-class-variable
+  "Get the class-info for class variable access/assignment.
+   Works from instance context (self is an instance) or class context."
+  [variables]
+  (when-let [self (get @variables "self")]
+    (cond
+      ;; self is an instance with class-info
+      (and (map? self) (:class-info self))
+      (:class-info self)
+      ;; self is a class object directly (has :class-variables)
+      (and (map? self) (:class-variables self))
+      self
+      :else nil)))
+
+(defn interpret-class-variable-access
+  "Interpret class variable access (@@var)."
+  [ast entity-id variables]
+  (let [var-name (parser/get-component ast entity-id :variable)]
+    (if-let [class-info (get-class-info-for-class-variable variables)]
+      (if-let [class-vars (:class-variables class-info)]
+        (get @class-vars var-name)
+        nil)
+      ;; Try to find class context from current-class variable
+      (if-let [current-class (get @variables "__current_class__")]
+        (if-let [class-vars (:class-variables current-class)]
+          (get @class-vars var-name)
+          nil)
+        nil))))
+
+(defn interpret-class-variable-assignment
+  "Interpret class variable assignment (@@var = value)."
+  [ast entity-id variables]
+  (let [var-name (parser/get-component ast entity-id :variable)
+        value-id (parser/get-component ast entity-id :value)
+        value (interpret-expression ast value-id variables)]
+    (if-let [class-info (get-class-info-for-class-variable variables)]
+      (if-let [class-vars (:class-variables class-info)]
+        (do
+          (swap! class-vars assoc var-name value)
+          value)
+        value)
+      ;; Try to find class context from current-class variable
+      (if-let [current-class (get @variables "__current_class__")]
+        (if-let [class-vars (:class-variables current-class)]
+          (do
+            (swap! class-vars assoc var-name value)
+            value)
+          value)
+        value))))
 
 (defn interpret-block
   "Interpret a block of statements."
@@ -2324,6 +2406,8 @@
        :instance-variable-assignment (interpret-instance-variable-assignment ast entity-id variables)
        :global-variable-access (interpret-global-variable-access ast entity-id variables)
        :global-variable-assignment (interpret-global-variable-assignment ast entity-id variables)
+       :class-variable-access (interpret-class-variable-access ast entity-id variables)
+       :class-variable-assignment (interpret-class-variable-assignment ast entity-id variables)
        :method-definition (interpret-method-definition ast entity-id variables)
        :module-definition (interpret-module-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables)
@@ -2389,6 +2473,8 @@
        :instance-variable-assignment (interpret-instance-variable-assignment ast entity-id variables)
        :global-variable-access (interpret-global-variable-access ast entity-id variables)
        :global-variable-assignment (interpret-global-variable-assignment ast entity-id variables)
+       :class-variable-access (interpret-class-variable-access ast entity-id variables)
+       :class-variable-assignment (interpret-class-variable-assignment ast entity-id variables)
        :method-definition (interpret-method-definition ast entity-id variables)
        :module-definition (interpret-module-definition ast entity-id variables)
        :class-definition (interpret-class-definition ast entity-id variables opts)
