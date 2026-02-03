@@ -13,6 +13,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     - name: Set up GraalVM
       uses: graalvm/setup-graalvm@v1
       with:
@@ -28,3 +30,5 @@ jobs:
       run: ./build-native.sh
     - name: Run tests
       run: lein test
+    - name: Run Ruby specs
+      run: make ruby-specs
