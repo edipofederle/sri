@@ -59,7 +59,7 @@ rspec:
 # Run Ruby specs from ruby-specs-to-run.edn
 ruby-specs:
 	@total_pass=0; total_fail=0; total_error=0; \
-	for spec in $$(clj -M -e '(doseq [s (-> "ruby-specs-to-run.edn" slurp clojure.edn/read-string)] (println (:path s)))'); do \
+	for spec in $$(clj -M -e '(doseq [s (-> "ruby-specs-to-run.edn" slurp clojure.edn/read-string)] (println (:path s)))' 2>/dev/null); do \
 		echo ""; \
 		echo "=== Running: $$spec ==="; \
 		output=$$(lein run test_rspec_capabilities.rb "$$spec" 2>&1); \
