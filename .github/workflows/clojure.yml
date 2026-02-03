@@ -31,5 +31,7 @@ jobs:
       run: ./build-native.sh
     - name: Run tests
       run: lein test
+    - name: Install rlwrap
+      run: sudo apt-get update && sudo apt-get install -y rlwrap
     - name: Run Ruby specs
       run: make ruby-specs
