@@ -360,73 +360,152 @@
         (ruby-classes/map->ruby-hash initial-map))
       (ruby-classes/create-empty-hash))))
 
+(defn array-slice-assign!
+  "Perform slice assignment on a RubyArray: arr[start, cnt] = value.
+   Replaces `cnt` elements starting at `start` with the assigned value(s)."
+  [ruby-array start cnt new-value]
+  (let [current-data @(:data ruby-array)
+        len (clojure.core/count current-data)
+        idx (if (< start 0) (+ len start) start)
+        ;; Clamp cnt to not exceed array bounds
+        actual-count (min cnt (max 0 (- len idx)))
+        ;; Build replacement elements
+        replacement (cond
+                      (ruby-classes/ruby-array? new-value) @(:data new-value)
+                      (vector? new-value) new-value
+                      :else [new-value])
+        ;; Splice: take elements before start, add replacement, add elements after start+cnt
+        before (subvec current-data 0 (min idx len))
+        after (if (< (+ idx actual-count) len)
+                (subvec current-data (+ idx actual-count))
+                [])
+        updated (vec (concat before replacement after))]
+    (reset! (:data ruby-array) updated)
+    new-value))
+
+(defn resolve-index-args
+  "Resolve index arguments, unpacking splat results into flat integer args."
+  [ast indices variables]
+  (reduce (fn [acc idx-id]
+            (let [node-type (parser/get-node-type ast idx-id)]
+              (if (= node-type :splat-operation)
+                ;; Splat inside brackets: expand to individual args
+                (let [result (interpret-expression ast idx-id variables)]
+                  (if (sequential? result)
+                    (into acc result)
+                    (conj acc result)))
+                (conj acc (interpret-expression ast idx-id variables)))))
+          []
+          indices))
+
 (defn interpret-array-access
-  "Interpret array or hash access like arr[0] or hash[key]."
+  "Interpret array or hash access like arr[0], arr[1,3], or hash[key]."
   [ast entity-id variables]
   (let [receiver-id (parser/get-receiver ast entity-id)
-        index-id (parser/get-component ast entity-id :index)
-        receiver-val (interpret-expression ast receiver-id variables)
-        index-val (interpret-expression ast index-id variables)]
-    (cond
-      ;; Ruby string access
-      (= (type receiver-val) sri.ruby_string.RubyString)
-      (let [str-val (:value receiver-val)
-            len (count str-val)
-            actual-index (if (< index-val 0) (+ len index-val) index-val)]
-        (cond
-          ;; Single character access
-          (integer? index-val)
-          (if (and (>= actual-index 0) (< actual-index len))
-            (ruby-string/->RubyString (str (nth str-val actual-index)))
-            nil)
+        indices (parser/get-component ast entity-id :indices)
+        receiver-val (interpret-expression ast receiver-id variables)]
+    (if indices
+      ;; Multi-argument indexing (slice read, e.g., arr[1, 3])
+      (let [resolved-args (resolve-index-args ast indices variables)]
+        (if (and (ruby-classes/ruby-array? receiver-val)
+                 (= 2 (clojure.core/count resolved-args))
+                 (integer? (first resolved-args))
+                 (integer? (second resolved-args)))
+          (let [array-data @(:data receiver-val)
+                len (clojure.core/count array-data)
+                start (let [s (first resolved-args)]
+                        (if (< s 0) (+ len s) s))
+                cnt (second resolved-args)
+                end (min (+ start cnt) len)
+                slice (if (and (>= start 0) (<= start len))
+                        (vec (subvec array-data start end))
+                        [])]
+            (ruby-classes/vector->ruby-array slice))
+          (throw (ex-info "Invalid slice arguments" {:args resolved-args}))))
+      ;; Single index access (original behavior)
+      (let [index-id (parser/get-component ast entity-id :index)
+            ;; Check if the index is a splat that should expand to multiple args
+            index-node-type (parser/get-node-type ast index-id)
+            index-val (interpret-expression ast index-id variables)]
+        ;; Handle splat in single-index position: arr[*args] where args = [1, 10]
+        (if (and (= index-node-type :splat-operation)
+                 (ruby-classes/ruby-array? receiver-val)
+                 (sequential? index-val)
+                 (= 2 (clojure.core/count index-val))
+                 (integer? (first index-val))
+                 (integer? (second index-val)))
+          ;; Treat as slice access
+          (let [array-data @(:data receiver-val)
+                len (clojure.core/count array-data)
+                start (let [s (first index-val)]
+                        (if (< s 0) (+ len s) s))
+                cnt (second index-val)
+                end (min (+ start cnt) len)
+                slice (if (and (>= start 0) (<= start len))
+                        (vec (subvec array-data start end))
+                        [])]
+            (ruby-classes/vector->ruby-array slice))
+          ;; Normal single-index access
+          (cond
+            ;; Ruby string access
+            (= (type receiver-val) sri.ruby_string.RubyString)
+          (let [str-val (:value receiver-val)
+                len (count str-val)
+                actual-index (if (< index-val 0) (+ len index-val) index-val)]
+            (cond
+              ;; Single character access
+              (integer? index-val)
+              (if (and (>= actual-index 0) (< actual-index len))
+                (ruby-string/->RubyString (str (nth str-val actual-index)))
+                nil)
+              :else
+              (let [exception (ruby-classes/create-type-error
+                               (str "no implicit conversion of " (type index-val) " into Integer"))]
+                (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
+
+          ;; Ruby array access (check first)
+          (ruby-classes/ruby-array? receiver-val)
+          (cond
+            (not (integer? index-val))
+            (let [exception (ruby-classes/create-type-error
+                             (str "no implicit conversion of " (type index-val) " into Integer"))]
+              (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
+
+            :else
+            (let [array-data @(:data receiver-val)
+                  idx (if (< index-val 0) (+ (count array-data) index-val) index-val)]
+              (if (and (>= idx 0) (< idx (count array-data)))
+                (get array-data idx)
+                nil))) ; Ruby returns nil for out-of-bounds access
+
+          ;; Ruby hash access
+          (ruby-classes/ruby-hash? receiver-val)
+          (get @(:data receiver-val) index-val)
+
+          ;; Legacy immutable hash access (for backward compatibility)
+          (map? receiver-val)
+          (get receiver-val index-val)
+
+          ;; Legacy vector access (for backward compatibility)
+          (vector? receiver-val)
+          (cond
+            (not (integer? index-val))
+            (let [exception (ruby-classes/create-type-error
+                             (str "no implicit conversion of " (type index-val) " into Integer"))]
+              (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
+
+            :else
+            (let [idx (if (< index-val 0) (+ (count receiver-val) index-val) index-val)]
+              (when (= "true" (System/getenv "RUBY_VERBOSE"))
+                (println "DEBUG: Vector access - array:" receiver-val "index:" index-val "computed idx:" idx))
+              (if (and (>= idx 0) (< idx (count receiver-val)))
+                (get receiver-val idx)
+                nil)))
+
           :else
           (let [exception (ruby-classes/create-type-error
-                           (str "no implicit conversion of " (type index-val) " into Integer"))]
-            (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
-
-      ;; Ruby array access (check first)
-      (ruby-classes/ruby-array? receiver-val)
-      (cond
-        (not (integer? index-val))
-        (let [exception (ruby-classes/create-type-error
-                         (str "no implicit conversion of " (type index-val) " into Integer"))]
-          (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
-
-        :else
-        (let [array-data @(:data receiver-val)
-              idx (if (< index-val 0) (+ (count array-data) index-val) index-val)]
-          (if (and (>= idx 0) (< idx (count array-data)))
-            (get array-data idx)
-            nil))) ; Ruby returns nil for out-of-bounds access
-
-      ;; Ruby hash access
-      (ruby-classes/ruby-hash? receiver-val)
-      (get @(:data receiver-val) index-val)
-
-      ;; Legacy immutable hash access (for backward compatibility)
-      (map? receiver-val)
-      (get receiver-val index-val)
-
-      ;; Legacy vector access (for backward compatibility)
-      (vector? receiver-val)
-      (cond
-        (not (integer? index-val))
-        (let [exception (ruby-classes/create-type-error
-                         (str "no implicit conversion of " (type index-val) " into Integer"))]
-          (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))
-
-        :else
-        (let [idx (if (< index-val 0) (+ (count receiver-val) index-val) index-val)]
-          (when (= "true" (System/getenv "RUBY_VERBOSE"))
-            (println "DEBUG: Vector access - array:" receiver-val "index:" index-val "computed idx:" idx))
-          (if (and (>= idx 0) (< idx (count receiver-val)))
-            (get receiver-val idx)
-            nil)))
-
-      :else
-      (let [exception (ruby-classes/create-type-error
-                       (str "[] operator not supported for " (type receiver-val)))]
-        (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))))
+                           (str "[] operator not supported for " (type receiver-val)))]
+            (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))))))
 
 (defn interpret-array-assignment
   "Interpret array assignment like arr[0] = value."
@@ -448,56 +527,85 @@
         new-value))))
 
 (defn interpret-indexed-assignment
-  "Interpret indexed assignment like arr[0] = value or hash[key] = value."
+  "Interpret indexed assignment like arr[0] = value, arr[1, 10] = value, or hash[key] = value."
   [ast entity-id variables]
-  (let [{:keys [array index value]} (parser/get-components ast entity-id [:array :index :value])
-        index-val (interpret-expression ast index variables)
+  (let [{:keys [array index indices value]} (parser/get-components ast entity-id [:array :index :indices :value])
         new-value (interpret-expression ast value variables)]
-    (when-let [current-receiver (get @variables array)]
-      (cond
-        ;; Ruby hash assignment
-        (ruby-classes/ruby-hash? current-receiver)
-        (do
-          (swap! (:data current-receiver) assoc index-val new-value)
-          new-value)
+    (if indices
+      ;; Multi-argument indexing (e.g., arr[1, 10] = val or arr[*args] = val)
+      (let [resolved-args (resolve-index-args ast indices variables)]
+        (when-let [current-receiver (get @variables array)]
+          (cond
+            (ruby-classes/ruby-array? current-receiver)
+            (if (and (= 2 (clojure.core/count resolved-args))
+                     (integer? (first resolved-args))
+                     (integer? (second resolved-args)))
+              (do (array-slice-assign! current-receiver (first resolved-args) (second resolved-args) new-value)
+                  new-value)
+              (throw (ex-info "Invalid slice arguments" {:args resolved-args})))
 
-        ;; Ruby array assignment
-        (ruby-classes/ruby-array? current-receiver)
-        (if (integer? index-val)
-          (let [current-data @(:data current-receiver)
-                idx (if (< index-val 0) (+ (count current-data) index-val) index-val)]
-            (if (>= idx 0)
-              (let [;; Expand array if needed
-                    expanded (if (>= idx (count current-data))
-                              (vec (concat current-data (repeat (- idx (count current-data) -1) nil)))
-                              current-data)
-                    updated (assoc expanded idx new-value)]
-                (reset! (:data current-receiver) updated)
+            :else
+            (throw (ex-info "Multi-argument indexing not supported for this type" {:receiver current-receiver})))))
+      ;; Single index (original behavior)
+      (let [index-node-type (parser/get-node-type ast index)
+            index-val (interpret-expression ast index variables)]
+        ;; Handle splat in single-index position: arr[*args] = val where args = [1, 10]
+        (if (and (= index-node-type :splat-operation)
+                 (sequential? index-val)
+                 (= 2 (clojure.core/count index-val))
+                 (integer? (first index-val))
+                 (integer? (second index-val)))
+          ;; Treat as slice assignment
+          (when-let [current-receiver (get @variables array)]
+            (when (ruby-classes/ruby-array? current-receiver)
+              (array-slice-assign! current-receiver (first index-val) (second index-val) new-value)
+              new-value))
+          ;; Normal single-index assignment
+          (when-let [current-receiver (get @variables array)]
+            (cond
+              ;; Ruby hash assignment
+              (ruby-classes/ruby-hash? current-receiver)
+            (do
+              (swap! (:data current-receiver) assoc index-val new-value)
+              new-value)
+
+            ;; Ruby array assignment
+            (ruby-classes/ruby-array? current-receiver)
+            (if (integer? index-val)
+              (let [current-data @(:data current-receiver)
+                    idx (if (< index-val 0) (+ (count current-data) index-val) index-val)]
+                (if (>= idx 0)
+                  (let [;; Expand array if needed
+                        expanded (if (>= idx (count current-data))
+                                  (vec (concat current-data (repeat (- idx (count current-data) -1) nil)))
+                                  current-data)
+                        updated (assoc expanded idx new-value)]
+                    (reset! (:data current-receiver) updated)
+                    new-value)
+                  (throw (ex-info "Negative index too large" {:index index-val :array-size (count current-data)}))))
+              (throw (ex-info "Array index must be integer" {:array current-receiver :index index-val})))
+
+            ;; Legacy immutable hash assignment
+            (map? current-receiver)
+            (let [updated-hash (assoc current-receiver index-val new-value)]
+              (swap! variables assoc array updated-hash)
+              new-value)
+
+            ;; Array assignment
+            (vector? current-receiver)
+            (if (integer? index-val)
+              (let [idx (if (< index-val 0) (+ (count current-receiver) index-val) index-val)
+                    ;; Expand array if needed
+                    expanded-array (if (>= idx (count current-receiver))
+                                    (vec (concat current-receiver (repeat (- idx (count current-receiver) -1) nil)))
+                                    current-receiver)
+                    updated-array (assoc expanded-array idx new-value)]
+                (swap! variables assoc array updated-array)
                 new-value)
-              (throw (ex-info "Negative index too large" {:index index-val :array-size (count current-data)}))))
-          (throw (ex-info "Array index must be integer" {:array current-receiver :index index-val})))
+              (throw (ex-info "Array index must be integer" {:array current-receiver :index index-val})))
 
-        ;; Legacy immutable hash assignment
-        (map? current-receiver)
-        (let [updated-hash (assoc current-receiver index-val new-value)]
-          (swap! variables assoc array updated-hash)
-          new-value)
-
-        ;; Array assignment
-        (vector? current-receiver)
-        (if (integer? index-val)
-          (let [idx (if (< index-val 0) (+ (count current-receiver) index-val) index-val)
-                ;; Expand array if needed
-                expanded-array (if (>= idx (count current-receiver))
-                                (vec (concat current-receiver (repeat (- idx (count current-receiver) -1) nil)))
-                                current-receiver)
-                updated-array (assoc expanded-array idx new-value)]
-            (swap! variables assoc array updated-array)
-            new-value)
-          (throw (ex-info "Array index must be integer" {:array current-receiver :index index-val})))
-
-        :else
-        (throw (ex-info "Assignment to invalid type" {:receiver current-receiver :index index-val}))))))
+            :else
+            (throw (ex-info "Assignment to invalid type" {:receiver current-receiver :index index-val})))))))))
 
 (defn extract-class-name
   "Extract class name from a class object or return the string as-is."
@@ -1196,7 +1304,13 @@
         receiver-id (parser/get-receiver ast entity-id)
         args-ids (or (parser/get-component ast entity-id :arguments)
                      (parser/get-children ast entity-id))
-        args (map #(interpret-expression ast % variables) args-ids)]
+        ;; Handle splat operations by flattening them into the argument list
+        args (mapcat (fn [arg-id]
+                       (let [result (interpret-expression ast arg-id variables)]
+                         (if (= (parser/get-node-type ast arg-id) :splat-operation)
+                           (if (sequential? result) result [result])
+                           [result])))
+                     args-ids)]
 
     (if receiver-id
       ;; Method call on object: obj.method(args)

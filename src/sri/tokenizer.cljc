@@ -394,7 +394,7 @@
               [(create-token :integer (str int-value) start-line start-column)
                current-state])))))))
 
-(declare read-interpolation-expression read-word-array)
+(declare read-interpolation-expression read-word-array read-escape-sequence)
 
 (defn- valid-id-start? [ch]
   (and ch (or (Character/isLetter ^char ch) (= ch \_))))
@@ -541,6 +541,15 @@
             (recur end-state
                    (conj parts {:type :expression :source var-name})))
 
+          ;; Backslash escape in interpolated string
+          (= ch \\)
+          (let [[_ escape-state] (next-char current-state)
+                [escaped-str new-state] (read-escape-sequence escape-state)
+                last-part (last parts)]
+            (if (string? last-part)
+              (recur new-state (conj (pop parts) (str last-part escaped-str)))
+              (recur new-state (conj parts escaped-str))))
+
           :else
           ;; Regular character - add to text part
           (let [[consumed-ch new-state] (next-char current-state)
@@ -582,6 +591,68 @@
             (.append sb consumed-ch)
             (recur new-state brace-count)))))))
 
+(defn- read-octal-escape
+  "Read an octal escape sequence given the first octal digit already consumed.
+   Returns [escaped-string new-state]."
+  [first-digit state-after]
+  (let [sb (StringBuilder.)]
+    (.append sb first-digit)
+    (loop [cs state-after
+           count 1]
+      (let [ch (peek-char cs)]
+        (if (and (< count 3) (octal-digit? ch))
+          (let [[c ns] (next-char cs)]
+            (.append sb c)
+            (recur ns (inc count)))
+          (let [octal-str (.toString sb)
+                code (Integer/parseInt octal-str 8)]
+            [(str (char code)) cs]))))))
+
+(defn read-escape-sequence
+  "Read an escape sequence after a backslash in a double-quoted string.
+   Returns [escaped-string new-state] where state is positioned after the escape."
+  [state]
+  (let [[escaped-ch state-after] (next-char state)]
+    (case escaped-ch
+      ;; Simple escapes
+      \n ["\n" state-after]
+      \t ["\t" state-after]
+      \r ["\r" state-after]
+      \\ ["\\" state-after]
+      \" ["\"" state-after]
+      \' ["'" state-after]
+      \f ["\f" state-after]
+      \b ["\b" state-after]
+      \a ["\u0007" state-after]  ; bell
+      \e ["\u001b" state-after]  ; escape
+      \s [" " state-after]       ; space
+      ;; Octal escape: \NNN (1-3 octal digits)
+      (\0 \1 \2 \3 \4 \5 \6 \7) (read-octal-escape escaped-ch state-after)
+      ;; Hex escape: \xNN (1-2 hex digits)
+      \x (let [sb (StringBuilder.)]
+           (loop [cs state-after
+                  count 0]
+             (let [ch (peek-char cs)]
+               (if (and (< count 2) (hex-digit? ch))
+                 (let [[c ns] (next-char cs)]
+                   (.append sb c)
+                   (recur ns (inc count)))
+                 (if (> count 0)
+                   (let [hex-str (.toString sb)
+                         code (Integer/parseInt hex-str 16)]
+                     [(str (char code)) cs])
+                   ;; No hex digits after \x - return literal "x"
+                   ["x" state-after])))))
+      ;; Control character escape: \cX or \C-X
+      \c (let [ctrl-ch (peek-char state-after)]
+           (if ctrl-ch
+             (let [[c ns] (next-char state-after)
+                   code (bit-and (int c) 0x1F)]
+               [(str (char code)) ns])
+             [(str escaped-ch) state-after]))
+      ;; Unknown escape: return the literal character
+      [(str escaped-ch) state-after])))
+
 (defn read-string-literal
   "Read a string literal from the input."
   [state quote-char]
@@ -606,18 +677,21 @@
                  final-state])
 
               (= ch \\)
-              (let [[_ escape-state] (next-char current-state)
-                    [escaped-ch new-state] (next-char escape-state)
-                    actual-char (case escaped-ch
-                                 \n \newline
-                                 \t \tab
-                                 \r \return
-                                 \\ \\
-                                 \" \"
-                                 \' \'
-                                 escaped-ch)]
-                (.append sb actual-char)
-                (recur new-state))
+              (if (= quote-char \")
+                ;; Double-quoted: full escape sequence support
+                (let [[_ escape-state] (next-char current-state)
+                      [escaped-str new-state] (read-escape-sequence escape-state)]
+                  (.append sb escaped-str)
+                  (recur new-state))
+                ;; Single-quoted: only \\ and \' are escapes
+                (let [[_ escape-state] (next-char current-state)
+                      [escaped-ch new-state] (next-char escape-state)]
+                  (case escaped-ch
+                    \\ (.append sb \\)
+                    \' (.append sb \')
+                    (do (.append sb \\)
+                        (.append sb escaped-ch)))
+                  (recur new-state)))
 
               :else
               (let [[consumed-ch new-state] (next-char current-state)]
@@ -862,6 +936,15 @@
                (not (Character/isWhitespace ^char next-ch)))
           (read-bare-percent-string state)
           :else (read-operator state)))
+
+      ;; Backslash-newline: line continuation
+      (= ch \\)
+      (let [next-ch (peek-char (update state :pos inc))]
+        (if (= next-ch \newline)
+          (let [[_ state1] (next-char state)
+                [_ state2] (next-char state1)]
+            (recur state2))
+          (read-operator state)))
 
       :else
       (read-operator state))))

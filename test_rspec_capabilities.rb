@@ -205,6 +205,90 @@ def be_nil
   BeNilMatcher.new
 end
 
+# equal matcher (object identity)
+class EqualMatcher
+  def initialize(expected)
+    @expected = expected
+  end
+
+  def matches?(actual)
+    actual.equal?(@expected)
+  end
+
+  def failure_message(actual)
+    "expected #{actual.inspect} to be the same object as #{@expected.inspect}"
+  end
+
+  def negative_failure_message(actual)
+    "expected #{actual.inspect} to not be the same object as #{@expected.inspect}"
+  end
+end
+
+def equal(expected)
+  EqualMatcher.new(expected)
+end
+
+# be_true matcher
+class BeTrueMatcher
+  def matches?(actual)
+    actual == true
+  end
+
+  def failure_message(actual)
+    "expected #{actual.inspect} to be true"
+  end
+
+  def negative_failure_message(actual)
+    "expected #{actual.inspect} to not be true"
+  end
+end
+
+def be_true
+  BeTrueMatcher.new
+end
+
+# be_false matcher
+class BeFalseMatcher
+  def matches?(actual)
+    actual == false
+  end
+
+  def failure_message(actual)
+    "expected #{actual.inspect} to be false"
+  end
+
+  def negative_failure_message(actual)
+    "expected #{actual.inspect} to not be false"
+  end
+end
+
+def be_false
+  BeFalseMatcher.new
+end
+
+# respond_to matcher
+class RespondToMatcher
+  def initialize(method_name)
+    @method_name = method_name
+  end
+
+  def matches?(actual)
+    actual.respond_to?(@method_name)
+  end
+
+  def failure_message(actual)
+    "expected #{actual.inspect} to respond to #{@method_name}"
+  end
+
+  def negative_failure_message(actual)
+    "expected #{actual.inspect} to not respond to #{@method_name}"
+  end
+end
+
+def respond_to(method_name)
+  RespondToMatcher.new(method_name)
+end
+
 # --------------------------
 # Example usage
 # --------------------------
@@ -262,6 +346,13 @@ class ShouldNotExpectation
     end
     true
   end
+
+  def equal(expected)
+    if @actual.equal?(expected)
+      raise("expected #{@actual.inspect} to not be the same object as #{expected.inspect}")
+    end
+    true
+  end
 end
 
 class Integer
@@ -299,8 +390,15 @@ class Array
     ShouldExpectation.new(self)
   end
 
-  def should_not
-    ShouldNotExpectation.new(self)
+  def should_not(matcher = nil)
+    if matcher != nil
+      if matcher.matches?(self)
+        raise(matcher.negative_failure_message(self))
+      end
+      true
+    else
+      ShouldNotExpectation.new(self)
+    end
   end
 end
 
@@ -316,31 +414,73 @@ end
 
 class TrueClass
   def should(matcher = nil)
-    ShouldExpectation.new(self)
+    if matcher != nil
+      if !matcher.matches?(self)
+        raise(matcher.failure_message(self))
+      end
+      true
+    else
+      ShouldExpectation.new(self)
+    end
   end
 
-  def should_not
-    ShouldNotExpectation.new(self)
+  def should_not(matcher = nil)
+    if matcher != nil
+      if matcher.matches?(self)
+        raise(matcher.negative_failure_message(self))
+      end
+      true
+    else
+      ShouldNotExpectation.new(self)
+    end
   end
 end
 
 class FalseClass
   def should(matcher = nil)
-    ShouldExpectation.new(self)
+    if matcher != nil
+      if !matcher.matches?(self)
+        raise(matcher.failure_message(self))
+      end
+      true
+    else
+      ShouldExpectation.new(self)
+    end
   end
 
-  def should_not
-    ShouldNotExpectation.new(self)
+  def should_not(matcher = nil)
+    if matcher != nil
+      if matcher.matches?(self)
+        raise(matcher.negative_failure_message(self))
+      end
+      true
+    else
+      ShouldNotExpectation.new(self)
+    end
   end
 end
 
 class Object
   def should(matcher = nil)
-    ShouldExpectation.new(self)
+    if matcher != nil
+      if !matcher.matches?(self)
+        raise(matcher.failure_message(self))
+      end
+      true
+    else
+      ShouldExpectation.new(self)
+    end
   end
 
-  def should_not
-    ShouldNotExpectation.new(self)
+  def should_not(matcher = nil)
+    if matcher != nil
+      if matcher.matches?(self)
+        raise(matcher.negative_failure_message(self))
+      end
+      true
+    else
+      ShouldNotExpectation.new(self)
+    end
   end
 end
 

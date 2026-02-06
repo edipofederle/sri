@@ -240,14 +240,21 @@
       [(assoc new-state :ast new-ast) entity-id])))
 
 (defn parse-string-literal
-  "Parse a string literal."
+  "Parse a string literal, concatenating adjacent string literals."
   [state]
   (when (match-token? state :string)
     (let [[token new-state] (consume-token state)
-          [new-ast entity-id] (create-node (:ast new-state) :string-literal
-                                          :value (:value token)
+          [final-value final-state]
+          (loop [value (:value token)
+                 s new-state]
+            (if (match-token? s :string)
+              (let [[next-token next-state] (consume-token s)]
+                (recur (str value (:value next-token)) next-state))
+              [value s]))
+          [new-ast entity-id] (create-node (:ast final-state) :string-literal
+                                          :value final-value
                                           :position {:line (:line token) :column (:column token)})]
-      [(assoc new-state :ast new-ast) entity-id])))
+      [(assoc final-state :ast new-ast) entity-id])))
 
 (defn parse-interpolated-string
   "Parse an interpolated string with #{} expressions."
@@ -602,14 +609,35 @@
 
         (match-token? current-state :operator "[")
         (let [[_ state-after-bracket] (consume-token current-state)
-              [state-after-index index-id] (parse-expression state-after-bracket)
-              [_ state-after-close] (expect-token state-after-index :operator "]")
-              [new-ast access-id] (create-node (:ast state-after-close) :array-access
-                                             :receiver current-id
-                                             :index index-id
-                                             :position {:line (:line (current-token current-state))
-                                                       :column (:column (current-token current-state))})]
-          (recur (assoc state-after-close :ast new-ast) access-id))
+              [state-after-first first-id] (parse-expression state-after-bracket)]
+          ;; Check for comma (multi-argument indexing like arr[1, 10])
+          (if (match-token? state-after-first :operator ",")
+            (let [[_ state-after-comma] (consume-token state-after-first)
+                  ;; Parse remaining arguments
+                  [final-state all-indices]
+                  (loop [s state-after-comma
+                         indices [first-id]]
+                    (let [[s2 idx-id] (parse-expression s)
+                          new-indices (conj indices idx-id)]
+                      (if (match-token? s2 :operator ",")
+                        (let [[_ s3] (consume-token s2)]
+                          (recur s3 new-indices))
+                        [s2 new-indices])))
+                  [_ state-after-close] (expect-token final-state :operator "]")
+                  [new-ast access-id] (create-node (:ast state-after-close) :array-access
+                                                   :receiver current-id
+                                                   :indices all-indices
+                                                   :position {:line (:line (current-token current-state))
+                                                             :column (:column (current-token current-state))})]
+              (recur (assoc state-after-close :ast new-ast) access-id))
+            ;; Single index (backwards compatible)
+            (let [[_ state-after-close] (expect-token state-after-first :operator "]")
+                  [new-ast access-id] (create-node (:ast state-after-close) :array-access
+                                                   :receiver current-id
+                                                   :index first-id
+                                                   :position {:line (:line (current-token current-state))
+                                                             :column (:column (current-token current-state))})]
+              (recur (assoc state-after-close :ast new-ast) access-id))))
 
         :else
         [current-state current-id])))
@@ -1839,22 +1867,44 @@
   (when (match-token? state :identifier)
     (let [lookahead-state (update state :pos inc)]
       (when (match-token? lookahead-state :operator "[")
-        ;; Try to parse: identifier[expr] = value
+        ;; Try to parse: identifier[expr] = value or identifier[expr, expr] = value
         (let [[id-token state-after-id] (consume-token state)
               [_ state-after-bracket] (consume-token state-after-id)
-              [state-after-index index-id] (parse-expression state-after-bracket)
-              [_ state-after-close] (expect-token state-after-index :operator "]")
-              state-after-close-bracket state-after-close]
-          ;; Check for assignment operator
-          (when (match-token? state-after-close-bracket :operator "=")
-            (let [[_ state-after-assign] (consume-token state-after-close-bracket)
-                  [state-after-value value-id] (parse-expression state-after-assign)
-                  [new-ast entity-id] (create-node (:ast state-after-value) :indexed-assignment-statement
-                                                   :array (:value id-token)
-                                                   :index index-id
-                                                   :value value-id
-                                                   :position {:line (:line id-token) :column (:column id-token)})]
-              [(assoc state-after-value :ast new-ast) entity-id])))))))
+              [state-after-first first-id] (parse-expression state-after-bracket)]
+          ;; Check for comma (multi-argument indexing)
+          (if (match-token? state-after-first :operator ",")
+            ;; Multi-argument: identifier[expr, expr, ...] = value
+            (let [[_ state-after-comma] (consume-token state-after-first)
+                  [final-state all-indices]
+                  (loop [s state-after-comma
+                         indices [first-id]]
+                    (let [[s2 idx-id] (parse-expression s)
+                          new-indices (conj indices idx-id)]
+                      (if (match-token? s2 :operator ",")
+                        (let [[_ s3] (consume-token s2)]
+                          (recur s3 new-indices))
+                        [s2 new-indices])))
+                  [_ state-after-close] (expect-token final-state :operator "]")]
+              (when (match-token? state-after-close :operator "=")
+                (let [[_ state-after-assign] (consume-token state-after-close)
+                      [state-after-value value-id] (parse-expression state-after-assign)
+                      [new-ast entity-id] (create-node (:ast state-after-value) :indexed-assignment-statement
+                                                       :array (:value id-token)
+                                                       :indices all-indices
+                                                       :value value-id
+                                                       :position {:line (:line id-token) :column (:column id-token)})]
+                  [(assoc state-after-value :ast new-ast) entity-id])))
+            ;; Single index: identifier[expr] = value (backwards compatible)
+            (let [[_ state-after-close] (expect-token state-after-first :operator "]")]
+              (when (match-token? state-after-close :operator "=")
+                (let [[_ state-after-assign] (consume-token state-after-close)
+                      [state-after-value value-id] (parse-expression state-after-assign)
+                      [new-ast entity-id] (create-node (:ast state-after-value) :indexed-assignment-statement
+                                                       :array (:value id-token)
+                                                       :index first-id
+                                                       :value value-id
+                                                       :position {:line (:line id-token) :column (:column id-token)})]
+                  [(assoc state-after-value :ast new-ast) entity-id])))))))))
 
 (defn parse-method-assignment-statement
   "Parse a method assignment statement (obj.method = expression)."

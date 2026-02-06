@@ -17,7 +17,7 @@
   (ruby-ancestors [_] ["Array" "Object" "Kernel" "BasicObject"])
   (respond-to? [_ method-name]
     (contains? #{:to_s :inspect :length :size "[]" "[]=" :push :<< :pop :first :last
-                 :each :map :select :empty? :== :!= :+ 
+                 :each :map :select :empty? :== :!= :+ :dup :to_a
                  :equal? :object_id :respond_to? :methods :instance_of?
                  :kind_of? :is_a? :class :nil? :puts :p :print} method-name))
   (get-ruby-method [this method-name]
@@ -184,6 +184,16 @@
         :else
         (throw (ex-info "Array concatenation requires array argument" 
                        {:array1 ruby-array1 :array2 ruby-array2})))))
+
+  ;; dup - shallow copy
+  (register-method "Array" :dup
+    (fn [ruby-array]
+      (->RubyArray (atom (vec @(:data ruby-array))))))
+
+  ;; to_a - returns self (already an array)
+  (register-method "Array" :to_a
+    (fn [ruby-array]
+      ruby-array))
 
   ;; Include Kernel methods (mixed into Object, inherited by Array)
   (kernel/register-kernel-methods-for-class! "Array"))
