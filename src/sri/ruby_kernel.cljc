@@ -2,7 +2,7 @@
   "Implementation of Ruby's Kernel module - methods available to all objects."
   (:require [clojure.string :as str]
             [sri.ruby-method-registry :refer [register-method]]
-            [sri.ruby-protocols :refer [RubyInspectable to-s]])
+            [sri.ruby-protocols :refer [RubyInspectable to-s inspect]])
   (:import [java.io File]))
 
 ;; =============================================================================
@@ -48,7 +48,7 @@
                                 (nil? arg) "nil"
                                 (string? arg) (str "\"" arg "\"")
                                 (and (map? arg) (contains? arg :value)) (str "\"" (:value arg) "\"") ; RubyString
-                                (satisfies? RubyInspectable arg) (to-s arg)
+                                (satisfies? RubyInspectable arg) (inspect arg)
                                 ;; Class objects (maps with :name and :builtin) should show just the name
                                 (and (map? arg) (:name arg) (:builtin arg)) (:name arg)
                                 :else (str arg))) args)]

@@ -822,6 +822,34 @@
           (identifier-start? next-ch)
           (let [[identifier-token state2] (read-identifier state1)]
             [(create-token :symbol (:value identifier-token) start-line start-column) state2])
+          ;; Symbol :@var or :@@var (instance/class variable)
+          (= next-ch \@)
+          (let [[_ state2] (next-char state1)
+                next-next-ch (peek-char state2)]
+            (if (= next-next-ch \@)
+              ;; Class variable symbol :@@var
+              (let [[_ state3] (next-char state2)
+                    [identifier-token state4] (read-identifier state3)]
+                [(create-token :symbol (str "@@" (:value identifier-token)) start-line start-column) state4])
+              ;; Instance variable symbol :@var
+              (let [[identifier-token state3] (read-identifier state2)]
+                [(create-token :symbol (str "@" (:value identifier-token)) start-line start-column) state3])))
+          ;; Symbol :$var (global variable)
+          (= next-ch \$)
+          (let [[_ state2] (next-char state1)
+                [identifier-token state3] (read-identifier state2)]
+            [(create-token :symbol (str "$" (:value identifier-token)) start-line start-column) state3])
+          ;; Symbol from operator character like :~, :-, :&, :+, etc.
+          (contains? #{\~ \- \+ \* \/ \% \< \> \& \| \^ \! \=} next-ch)
+          (let [[op-ch state2] (next-char state1)]
+            [(create-token :symbol (str op-ch) start-line start-column) state2])
+          ;; Quoted symbol :'foo' or :"foo"
+          (or (= next-ch \') (= next-ch \"))
+          (let [[string-token state2] (read-string-literal state1 next-ch)]
+            (if (= (:type string-token) :interpolated-string)
+              ;; Interpolated symbol :"foo #{expr}" - preserve parts for runtime evaluation
+              [(create-token :interpolated-symbol (:value string-token) start-line start-column) state2]
+              [(create-token :symbol (:value string-token) start-line start-column) state2]))
           ;; Just a colon operator (for hash syntax)
           :else
           [(create-token :operator ":" start-line start-column) state1]))

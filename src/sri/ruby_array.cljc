@@ -5,13 +5,14 @@
                                         ruby-class ruby-ancestors respond-to?
                                         to-s inspect ruby-eq ruby-compare]]
             [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]
-            [sri.ruby-kernel :as kernel]))
+            [sri.ruby-kernel :as kernel]
+            [sri.ruby-symbol :as ruby-symbol]))
 
 ;; =============================================================================
 ;; Mutable Array Wrapper
 ;; =============================================================================
 
-(defrecord RubyArray [data]  ; data is an atom containing a vector
+(defrecord RubyArray [data]
   RubyObject
   (ruby-class [_] "Array")
   (ruby-ancestors [_] ["Array" "Object" "Kernel" "BasicObject"])
@@ -22,26 +23,27 @@
                  :kind_of? :is_a? :class :nil? :puts :p :print} method-name))
   (get-ruby-method [this method-name]
     (method-lookup this method-name))
-  
+
   RubyInspectable
-  (to-s [this] 
+  (to-s [this]
     (let [elements @(:data this)]
       (str "[" (str/join " " (map #(cond
                                      (nil? %) "nil"
-                                     (keyword? %) (name %) ; symbols without :
+                                     (ruby-symbol/ruby-symbol? %) (str ":" (:name %))
+                                     (keyword? %) (name %) ; legacy keyword symbols
                                      (string? %) (str "\"" % "\"") ; Java strings with quotes
                                      (and (map? %) (contains? % :value)) (str "\"" (:value %) "\"") ; RubyStrings with quotes
                                      (satisfies? RubyInspectable %) (to-s %)
                                      :else (str %)) elements)) "]")))
   (inspect [this] (to-s this))
-  
+
   RubyComparable
   (ruby-eq [this other]
     (and (instance? RubyArray other)
          (let [this-data @(:data this)
                other-data @(:data other)]
            (and (= (count this-data) (count other-data))
-                (every? true? 
+                (every? true?
                         (map (fn [a b]
                                (if (satisfies? RubyObject a)
                                  (ruby-eq a b)
@@ -177,12 +179,12 @@
       (cond
         (instance? RubyArray ruby-array2)
         (->RubyArray (atom (vec (concat @(:data ruby-array1) @(:data ruby-array2)))))
-        
+
         (vector? ruby-array2)
         (->RubyArray (atom (vec (concat @(:data ruby-array1) ruby-array2))))
-        
+
         :else
-        (throw (ex-info "Array concatenation requires array argument" 
+        (throw (ex-info "Array concatenation requires array argument"
                        {:array1 ruby-array1 :array2 ruby-array2})))))
 
   ;; dup - shallow copy

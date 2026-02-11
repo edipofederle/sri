@@ -177,12 +177,15 @@ class BeKindOfMatcher
   end
 
   def matches?(actual)
-    # Check if actual is an instance of the expected class
-    actual.class.name == @expected_class.name
+    # Check if actual is a kind of the expected class
+    # Use kind_of? which properly checks inheritance
+    actual.kind_of?(@expected_class)
   end
 
   def failure_message(actual)
-    "expected #{actual.inspect} to be a kind of #{@expected_class.name}"
+    # Handle both class objects (with .name) and strings
+    class_name = @expected_class.name
+    "expected #{actual.inspect} to be a kind of #{class_name}"
   end
 end
 
@@ -437,6 +440,30 @@ class TrueClass
 end
 
 class FalseClass
+  def should(matcher = nil)
+    if matcher != nil
+      if !matcher.matches?(self)
+        raise(matcher.failure_message(self))
+      end
+      true
+    else
+      ShouldExpectation.new(self)
+    end
+  end
+
+  def should_not(matcher = nil)
+    if matcher != nil
+      if matcher.matches?(self)
+        raise(matcher.negative_failure_message(self))
+      end
+      true
+    else
+      ShouldNotExpectation.new(self)
+    end
+  end
+end
+
+class Symbol
   def should(matcher = nil)
     if matcher != nil
       if !matcher.matches?(self)

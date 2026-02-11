@@ -49,8 +49,8 @@
   "Register all String methods in the method registry."
   []
   ;; Inherit from Object
-  (register-method "String" :to_s #(to-s %))
-  (register-method "String" :inspect #(inspect %))
+  (register-method "String" :to_s identity)  ; to_s on String returns self
+  (register-method "String" :inspect #(->RubyString (inspect %)))
   (register-method "String" :== #(ruby-eq %1 %2))
   (register-method "String" :!= #(not (ruby-eq %1 %2)))
   (register-method "String" :equal? #(identical? %1 %2))

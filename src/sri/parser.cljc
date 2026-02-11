@@ -330,7 +330,18 @@
                                           :position {:line (:line token) :column (:column token)})]
       [(assoc new-state :ast new-ast) entity-id])))
 
-(declare parse-expression parse-statement parse-primary parse-case-statement parse-multiple-assignment-statement parse-if-statement)
+(defn parse-interpolated-symbol
+  "Parse an interpolated symbol like :\"foo #{expr}\"."
+  [state]
+  (when (match-token? state :interpolated-symbol)
+    (let [[token new-state] (consume-token state)
+          parts (:value token)
+          [new-ast entity-id] (create-node (:ast new-state) :interpolated-symbol
+                                          :parts parts
+                                          :position {:line (:line token) :column (:column token)})]
+      [(assoc new-state :ast new-ast) entity-id])))
+
+(declare parse-expression parse-expression-without-and-or parse-statement parse-primary parse-case-statement parse-multiple-assignment-statement parse-if-statement)
 
 (defn can-start-argument?
   "Check if a token can start an argument (for parenthesis-less method calls)."
@@ -718,11 +729,13 @@
   [state]
   (when (match-token? state :operator "[")
     (let [[open-bracket state-after-open] (consume-token state)
+          state-after-open (skip-separators state-after-open)
           [elements final-state] (if (match-token? state-after-open :operator "]")
                                    [[] state-after-open]
                                    (loop [current-state state-after-open
                                           elements []]
                                      (let [[state-after-element element-id] (parse-expression current-state)
+                                           state-after-element (skip-separators state-after-element)
                                            new-elements (conj elements element-id)]
                                        (cond
                                          (match-token? state-after-element :operator "]")
@@ -738,7 +751,8 @@
                                            [all-elements hash-state])
 
                                          (match-token? state-after-element :operator ",")
-                                         (let [[_ state-after-comma] (consume-token state-after-element)]
+                                         (let [[_ state-after-comma] (consume-token state-after-element)
+                                               state-after-comma (skip-separators state-after-comma)]
                                            (if (match-token? state-after-comma :operator "]")
                                              [new-elements state-after-comma] ; trailing comma
                                              (recur state-after-comma new-elements)))
@@ -834,6 +848,7 @@
       (parse-nil-literal state)
       (parse-self-literal state)
       (parse-symbol-literal state)
+      (parse-interpolated-symbol state)
       (parse-word-array-literal state)
       (parse-array-literal state)
       (parse-hash-literal state)
@@ -1968,12 +1983,23 @@
         (let [[state-after-vars variables] (parse-variable-list state)]
           (when (match-token? state-after-vars :operator "=")
             (let [[_ state-after-assign] (consume-token state-after-vars)
-                  [state-after-value value-id] (parse-expression state-after-assign)
-                  [new-ast entity-id] (create-node (:ast state-after-value) :multiple-assignment-statement
+                  ;; Parse comma-separated list of expressions on the RHS
+                  [state-after-values value-ids]
+                  (loop [current-state state-after-assign
+                         ids []]
+                    (let [[state-after-expr expr-id] (parse-expression current-state)
+                          new-ids (conj ids expr-id)]
+                      (if (match-token? state-after-expr :operator ",")
+                        (let [[_ state-after-comma] (consume-token state-after-expr)]
+                          (recur state-after-comma new-ids))
+                        [state-after-expr new-ids])))
+                  single? (= 1 (count value-ids))
+                  [new-ast entity-id] (create-node (:ast state-after-values) :multiple-assignment-statement
                                                  :variables variables
-                                                 :value value-id
+                                                 :value (when single? (first value-ids))
+                                                 :values (when-not single? value-ids)
                                                  :position {:line (:line (first (:tokens state))) :column (:column (first (:tokens state)))})]
-              [(assoc state-after-value :ast new-ast) entity-id])))))))
+              [(assoc state-after-values :ast new-ast) entity-id])))))))
 
 (defn parse-assignment-statement
   "Parse an assignment statement (identifier = expression)."
@@ -1982,7 +2008,9 @@
     (when (match-token? (update state :pos inc) :operator "=")
         (let [[id-token state-after-id] (consume-token state)
               [_ state-after-assign] (consume-token state-after-id)
-              [state-after-value value-id] (parse-expression state-after-assign)
+              ;; Use parse-expression-without-and-or so that 'x = 1 and y = 2'
+              ;; parses as '(x = 1) and (y = 2)' not 'x = (1 and y = 2)'
+              [state-after-value value-id] (parse-expression-without-and-or state-after-assign)
               [new-ast entity-id] (create-node (:ast state-after-value) :assignment-statement
                                              :variable (:value id-token)
                                              :value value-id
@@ -2134,15 +2162,32 @@
                         (parse-multiple-assignment-statement state)
                         (parse-assignment-statement state)
                         (parse-expression state))]
-    (let [[state-after-stmt stmt-id] result]
+    (let [[state-after-stmt stmt-id] result
+          ;; Check for trailing and/or operators after assignment statements
+          ;; This handles: x = 1 and y = 2 -> (x = 1) and (y = 2)
+          [final-state final-id] (let [token (current-token state-after-stmt)]
+                                   (if (and token
+                                            (= (:type token) :keyword)
+                                            (contains? #{"and" "or"} (:value token)))
+                                     ;; Continue parsing as binary operation with precedence 1
+                                     (parse-binary-operation state-after-stmt stmt-id 1)
+                                     [state-after-stmt stmt-id]))]
       ;; Check for postfix modifiers after parsing the statement
-      (parse-postfix-if state-after-stmt stmt-id))))
+      (parse-postfix-if final-state final-id))))
 
 (defn parse-expression
   "Parse any expression with binary operations and precedence."
   [state]
   (let [[state-after-primary primary-id] (parse-primary state)]
     (parse-binary-operation state-after-primary primary-id 0)))
+
+(defn parse-expression-without-and-or
+  "Parse expression excluding low-precedence and/or operators.
+   Used for assignment RHS where = has higher precedence than and/or."
+  [state]
+  (let [[state-after-primary primary-id] (parse-primary state)]
+    ;; Use min-precedence 2 to exclude and/or (precedence 1)
+    (parse-binary-operation state-after-primary primary-id 2)))
 
 (defn find-root-entity
   "Find the root entity (one with no parent and is not referenced by others)."

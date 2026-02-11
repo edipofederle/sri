@@ -6,7 +6,8 @@
                                         to-s inspect ruby-eq ruby-compare]]
             [sri.ruby-method-registry :refer [register-method method-lookup class-methods]]
             [sri.ruby-kernel :as kernel]
-            [sri.ruby-array :as ruby-array]))
+            [sri.ruby-array :as ruby-array]
+            [sri.ruby-symbol :as ruby-symbol]))
 
 ;; =============================================================================
 ;; Mutable Hash Wrapper
@@ -31,17 +32,19 @@
         "{}"
         (let [pairs (map (fn [[k v]]
                            (str (cond
+                                  (ruby-symbol/ruby-symbol? k) (str ":" (:name k))
                                   (string? k) (str "\"" k "\"")
                                   (satisfies? RubyInspectable k) (str "\"" (to-s k) "\"")
-                                  (keyword? k) (name k)
+                                  (keyword? k) (name k) ; legacy keyword symbols
                                   :else (str k))
                                 "=>"
                                 (cond
+                                  (ruby-symbol/ruby-symbol? v) (str ":" (:name v))
                                   (string? v) (str "\"" v "\"")
                                   (satisfies? RubyInspectable v) (if (string? (to-s v))
                                                                     (str "\"" (to-s v) "\"")
                                                                     (to-s v))
-                                  (keyword? v) (name v)
+                                  (keyword? v) (name v) ; legacy keyword symbols
                                   :else (str v))))
                          hash-data)]
           (str "{" (str/join ", " pairs) "}")))))

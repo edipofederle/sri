@@ -7,4 +7,5 @@
  {:path "spec/language/def_spec.rb"}
  {:path "spec/language/if_spec.rb"}
  {:path "spec/language/for_spec.rb"}
- {:path "spec/language/while_spec.rb"}]
+ {:path "spec/language/while_spec.rb"}
+ {:path "spec/language/symbol_spec.rb"}]

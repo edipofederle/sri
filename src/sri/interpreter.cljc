@@ -7,6 +7,7 @@
             [sri.ruby-classes-new :as ruby-classes]
             [sri.ruby-object :as ruby-object]
             [sri.ruby-string :as ruby-string]
+            [sri.ruby-symbol :as ruby-symbol]
             [sri.ruby-nil-class :as ruby-nil-class]
             [sri.ruby-true-class :as ruby-true-class]
             [sri.ruby-false-class :as ruby-false-class]
@@ -188,6 +189,7 @@
       (string? value) (ruby-string/create-string value)
       (boolean? value) value
       (nil? value) nil
+      (keyword? value) (ruby-symbol/create-symbol value)
       :else value)))
 
 (defn interpret-rational-literal
@@ -204,37 +206,34 @@
         imaginary (parser/get-component ast entity-id :imaginary)]
     (ruby-classes/create-complex real imaginary)))
 
+(defn- evaluate-interpolation-parts
+  "Evaluate interpolation parts (strings and #{expr} maps) into a single string."
+  [ast entity-id variables]
+  (let [parts (parser/get-component ast entity-id :parts)]
+    (apply str (map (fn [part]
+                      (cond
+                        (string? part) part
+                        (and (map? part) (:source part))
+                        (let [expr-tokens (sri.tokenizer/tokenize (:source part))
+                              temp-state (parser/create-parse-state expr-tokens)
+                              [final-state expr-id] (parser/parse-expression temp-state)
+                              result (interpret-expression (:ast final-state) expr-id variables)]
+                          (cond
+                            (satisfies? RubyInspectable result) (to-s result)
+                            (and (map? result) (:name result) (:builtin result)) (:name result)
+                            :else (str result)))
+                        :else (str "UNKNOWN: " part)))
+                    parts))))
+
 (defn interpret-interpolated-string
   "Interpret an interpolated string by evaluating expressions and concatenating."
   [ast entity-id variables]
-  (let [parts (parser/get-component ast entity-id :parts)
-        result (apply str (map (fn [part]
-                                (cond
-                                  ;; Text part - return as is
-                                  (string? part)
-                                  part
+  (ruby-string/create-string (evaluate-interpolation-parts ast entity-id variables)))
 
-                                  ;; Expression part - parse and evaluate
-                                  (and (map? part) (:source part))
-                                  (let [expr-source (:source part)
-                                        expr-tokens (sri.tokenizer/tokenize expr-source)
-                                        temp-state (parser/create-parse-state expr-tokens)
-                                        [final-state expr-id] (parser/parse-expression temp-state)
-                                        result (interpret-expression (:ast final-state) expr-id variables)]
-                                    (cond
-                                      (satisfies? RubyInspectable result)
-                                      (to-s result)
-                                      ;; Class objects (maps with :name and :builtin) should show just the name
-                                      (and (map? result) (:name result) (:builtin result))
-                                      (:name result)
-                                      :else
-                                      (str result)))
-
-                                  ;; Unknown part type
-                                  :else
-                                  (str "UNKNOWN: " part)))
-                              parts))]
-    (ruby-string/create-string result)))
+(defn interpret-interpolated-symbol
+  "Interpret an interpolated symbol like :\"foo #{expr}\"."
+  [ast entity-id variables]
+  (ruby-symbol/create-symbol (evaluate-interpolation-parts ast entity-id variables)))
 
 (defn interpolate-string
   "Interpolate #{} expressions and simple #@var/#$var in a string."
@@ -333,8 +332,14 @@
         block-variables (atom @variables)]
 
     ;; Bind block parameters to arguments (pad with nil for missing args)
+    ;; If multiple params but single array arg, destructure the array
     (when (and block-params (seq block-params))
-      (let [padded-args (concat block-args (repeat nil))
+      (let [effective-args (if (and (> (count block-params) 1)
+                                   (= (count block-args) 1)
+                                   (instance? sri.ruby_array.RubyArray (first block-args)))
+                            @(:data (first block-args))
+                            block-args)
+            padded-args (concat effective-args (repeat nil))
             param-arg-pairs (map vector block-params padded-args)]
         (doseq [[param arg] param-arg-pairs]
           (swap! block-variables assoc param arg))))
@@ -1077,7 +1082,8 @@
                (ruby-classes/ruby-array? receiver) (count @(:data receiver))
                (vector? receiver) (count receiver)
                (string? receiver) (count receiver)
-               (keyword? receiver) (count (name receiver)) ; Length of symbol name
+               (ruby-symbol/ruby-symbol? receiver) (count (:name receiver))
+               (keyword? receiver) (count (name receiver)) ; Length of symbol name (legacy)
                (ruby-classes/ruby-hash? receiver) (count @(:data receiver))
                (map? receiver) (count receiver)
                :else ::method-not-found)
@@ -1087,49 +1093,35 @@
              (ruby-classes/ruby-array? receiver) (count @(:data receiver))
              (vector? receiver) (count receiver)
              (string? receiver) (count receiver)
-             (keyword? receiver) (count (name receiver)) ; Size of symbol name
+             (ruby-symbol/ruby-symbol? receiver) (count (:name receiver))
+             (keyword? receiver) (count (name receiver)) ; Size of symbol name (legacy)
              (ruby-classes/ruby-hash? receiver) (count @(:data receiver))
              (map? receiver) (count receiver)
              :else ::method-not-found)
     "to_s" (cond
              (ruby-classes/ruby-range? receiver)
              (ruby-classes/invoke-ruby-method receiver :to_s)
-             (ruby-classes/ruby-array? receiver)
-             ;; Ruby array to_s with proper formatting
-             (let [array-data @(:data receiver)]
+             (or (ruby-classes/ruby-array? receiver) (vector? receiver))
+             (let [items (if (ruby-classes/ruby-array? receiver) @(:data receiver) receiver)]
                (str "["
                     (clojure.string/join " "
                       (map (fn [item]
                              (cond
                                (ruby-classes/ruby-range? item)
                                (ruby-classes/invoke-ruby-method item :to_s)
+                               (ruby-symbol/ruby-symbol? item)
+                               (:name item)
                                (keyword? item)
                                (name item)
                                (string? item)
                                (str "\"" item "\"")
                                :else
                                (str item)))
-                           array-data))
+                           items))
                     "]"))
-
-             (vector? receiver)
-             ;; Legacy vector to_s with proper range formatting
-             (str "["
-                  (clojure.string/join " "
-                    (map (fn [item]
-                           (cond
-                             (ruby-classes/ruby-range? item)
-                             (ruby-classes/invoke-ruby-method item :to_s)
-                             (keyword? item)
-                             (name item)
-                             (string? item)
-                             (str "\"" item "\"")
-                             :else
-                             (str item)))
-                         receiver))
-                  "]")
              (ruby-classes/ruby-hash? receiver) (to-s receiver)
-             (keyword? receiver) (name receiver) ; Convert :hello to "hello"
+             (ruby-symbol/ruby-symbol? receiver) (:name receiver)
+             (keyword? receiver) (name receiver) ; Convert :hello to "hello" (legacy)
              (number? receiver) (ruby-classes/create-string (str receiver))
              :else (str receiver))
     "first" (cond
@@ -1250,11 +1242,13 @@
                (get receiver (first args)) ; Legacy immutable behavior
                :else ::method-not-found)
     "inspect" (cond
-                (keyword? receiver) (str receiver) ; :hello -> ":hello"
-                :else (str receiver))
-    "id2name" (if (keyword? receiver)
-                (name receiver)         ; Same as to_s for symbols
-                ::method-not-found)
+                (satisfies? RubyInspectable receiver) (ruby-classes/create-string (sri.ruby-protocols/inspect receiver))
+                (keyword? receiver) (ruby-classes/create-string (str receiver)) ; legacy
+                :else (ruby-classes/create-string (str receiver)))
+    "id2name" (cond
+                (ruby-symbol/ruby-symbol? receiver) (:name receiver)
+                (keyword? receiver) (name receiver) ; Same as to_s for symbols (legacy)
+                :else ::method-not-found)
     "class" (ruby-class-object receiver)
     ;; Range methods (each is handled by enumerable module)
     "to_a" (if (ruby-classes/ruby-range? receiver)
@@ -1756,16 +1750,21 @@
       (interpret-expression ast entity-id variables))))
 
 (defn interpret-multiple-assignment
-  "Interpret a multiple assignment statement (x, y = value)."
+  "Interpret a multiple assignment statement (x, y = value or x, y = 1, 2)."
   [ast entity-id variables]
   (let [var-names (parser/get-component ast entity-id :variables)
+        value-ids (parser/get-component ast entity-id :values)
         value-id (parser/get-component ast entity-id :value)
-        interpreted-value (interpret-expression ast value-id variables)]
-    ;; In Ruby, multiple assignment to single value assigns that value to all variables
-    ;; Example: x, y = nil assigns nil to both x and y
-    (doseq [var-name var-names]
-      (swap! variables assoc var-name interpreted-value))
-    interpreted-value))
+        [values return-val]
+        (if value-ids
+          (let [vs (mapv #(interpret-expression ast % variables) value-ids)]
+            [vs (last vs)])
+          (let [v (interpret-expression ast value-id variables)]
+            [(if (instance? sri.ruby_array.RubyArray v) @(:data v) (repeat v))
+             v]))]
+    (doseq [[var-name val] (map vector var-names (concat values (repeat nil)))]
+      (swap! variables assoc var-name val))
+    return-val))
 
 (defn interpret-method-definition
   "Interpret a method definition like def add(a, b) ... end."
@@ -2519,6 +2518,7 @@
        :nil-literal (interpret-literal ast entity-id)
        :self-literal (get @variables "self")
        :symbol-literal (interpret-literal ast entity-id)
+       :interpolated-symbol (interpret-interpolated-symbol ast entity-id variables)
        :word-array-literal (interpret-word-array-literal ast entity-id variables)
        :array-literal (interpret-array-literal ast entity-id variables)
        :hash-literal (interpret-hash-literal ast entity-id variables)
@@ -2586,6 +2586,7 @@
        :nil-literal (interpret-literal ast entity-id)
        :self-literal (get @variables "self")
        :symbol-literal (interpret-literal ast entity-id)
+       :interpolated-symbol (interpret-interpolated-symbol ast entity-id variables)
        :word-array-literal (interpret-word-array-literal ast entity-id variables)
        :array-literal (interpret-array-literal ast entity-id variables)
        :hash-literal (interpret-hash-literal ast entity-id variables)
@@ -2664,6 +2665,9 @@
             :methods (atom {})
             :ruby-class true
             :class-methods {"new" {:ruby-class-method true :name "new"}}}
+   "Symbol" {:name "Symbol"
+             :builtin true
+             :methods (atom {})}
    ;; Exception classes
    "Exception" {:name "Exception" :builtin true :exception-class true}
    "StandardError" {:name "StandardError" :builtin true :exception-class true}
