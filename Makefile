@@ -82,6 +82,10 @@ dev: test-jvm
 # Full CI build and test
 ci: clean native test
 
+# Generate HTML spec progress report
+spec-report:
+	./spec_report_generator.py
+
 # Show help
 help:
 	@echo "Sri Ruby Interpreter - Makefile targets:"
@@ -96,6 +100,7 @@ help:
 	@echo "  make repl         - Start a Clojure REPL"
 	@echo "  make dev          - Quick dev cycle (JVM tests only)"
 	@echo "  make ci           - Full CI build (clean + native + test)"
+	@echo "  make spec-report  - Generate HTML spec progress report"
 	@echo ""
 	@echo "  make run FILE=x.rb       - Run Ruby file with JVM"
 	@echo "  make run-native FILE=x.rb - Run Ruby file with native binary"

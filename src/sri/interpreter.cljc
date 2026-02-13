@@ -748,8 +748,8 @@
                  (satisfies? ruby-classes/RubyObject left-val)
                  (ruby-classes/invoke-ruby-method left-val :>= right-val)
                  :else (>= left-val right-val))
-          ".." (ruby-classes/create-range left-val right-val true)
-          "..." (ruby-classes/create-range left-val right-val false)
+           ".." (ruby-classes/create-range left-val right-val true)
+           "..." (ruby-classes/create-range left-val right-val false)
           "<<" (cond
                  ;; Ruby array append
                  (ruby-classes/ruby-array? left-val)
@@ -871,7 +871,7 @@
                         (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
     ["Range" "new"] (case (count args)
                       2 (ruby-classes/->RubyRange (first args) (second args) true)  ; Default inclusive
-                      3 (ruby-classes/->RubyRange (first args) (second args) (nth args 2))  ; Explicit inclusive flag
+                      3 (ruby-classes/->RubyRange (first args) (second args) (not (nth args 2)))  ; Convert exclusive flag to inclusive
                       (let [exception (ruby-classes/create-argument-error
                                        (str "wrong number of arguments (given " (count args) ", expected 2..3)"))]
                         (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
@@ -1139,9 +1139,13 @@
     "real?" (if (number? receiver) true ::method-not-found)
     "integer?" (if (number? receiver) (integer? receiver) ::method-not-found)
     "times" (if (integer? receiver)
-              ;; For now, just return the receiver since the test seems to be about object creation
-              ;; TODO: Implement proper block execution
-              receiver
+              (if (>= (count args) 1)
+                (let [block-fn (first args)]
+                  (dotimes [i receiver]
+                    (when block-fn
+                      (block-fn [i])))
+                  receiver)
+                receiver)
               ::method-not-found)
     "inc" (if (number? receiver) (+ receiver 1) ::method-not-found)
     "incn" (numeric-binary-op receiver args +)
@@ -1296,6 +1300,7 @@
   [ast entity-id variables]
   (let [method-name (parser/get-component ast entity-id :method)
         receiver-id (parser/get-receiver ast entity-id)
+        block-id (parser/get-component ast entity-id :block)
         args-ids (or (parser/get-component ast entity-id :arguments)
                      (parser/get-children ast entity-id))
         ;; Handle splat operations by flattening them into the argument list
@@ -1304,7 +1309,12 @@
                          (if (= (parser/get-node-type ast arg-id) :splat-operation)
                            (if (sequential? result) result [result])
                            [result])))
-                     args-ids)]
+                     args-ids)
+        ;; Add block function to arguments if there's a block
+        final-args (if block-id
+                      (concat args [(fn [block-args]
+                                     (execute-block ast block-id variables block-args))])
+                      args)]
 
     (if receiver-id
       ;; Method call on object: obj.method(args)
@@ -1336,23 +1346,23 @@
                                (str "undefined method `" method-name "` for Proc"))]
                 (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception})))))
           ;; Try different method resolution strategies
-          (let [class-result (try-class-method-call receiver method-name args variables ast)
+          (let [class-result (try-class-method-call receiver method-name final-args variables ast)
               instance-result (when (= class-result ::method-not-found)
-                               (try-instance-method-call receiver method-name args variables ast))
+                                (try-instance-method-call receiver method-name final-args variables ast))
               block-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found))
                             (try-block-method receiver method-name ast entity-id variables))
               ruby-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result))
-                           (try-ruby-object-method receiver method-name args))
+                           (try-ruby-object-method receiver method-name final-args))
               primitive-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
                                          (= ruby-result ::method-not-found))
-                                (try-primitive-class-method receiver method-name args variables ast))
+                                (try-primitive-class-method receiver method-name final-args variables ast))
               builtin-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
-                                       (= ruby-result ::method-not-found) (= primitive-result ::method-not-found))
-                              (try-builtin-instance-method receiver method-name args))
+                                         (= ruby-result ::method-not-found) (= primitive-result ::method-not-found))
+                                (try-builtin-instance-method receiver method-name final-args))
               new-result (when (and (= class-result ::method-not-found) (= instance-result ::method-not-found) (nil? block-result)
                                    (= ruby-result ::method-not-found) (= primitive-result ::method-not-found) (= builtin-result ::method-not-found)
                                    (= method-name "new"))
-                          (try-class-instantiation receiver args variables ast))]
+                          (try-class-instantiation receiver final-args variables ast))]
           (cond
             ;; Handle class methods - check for sentinel
             (not= class-result ::method-not-found) class-result
@@ -1838,20 +1848,24 @@
           (interpret-expression ast ensure-clause variables))))))
 
 (defn interpret-while-statement
-  "Interpret while loop with break/continue support."
+  "Interpret while loop with break/continue/redo support."
   [ast entity-id variables]
   (let [{:keys [condition body]} (parser/get-components ast entity-id [:condition :body])
         result (atom nil)
         running? (atom true)]
     (while (and @running? (interpret-expression ast condition variables))
-      (try
-        (reset! result (interpret-expression ast body variables))
-        (catch clojure.lang.ExceptionInfo e
-          (let [{:keys [type]} (ex-data e)]
-            (case type
-              :break (reset! running? false)
-              :continue nil  ; Just continue to next iteration
-              (throw e))))))
+      (let [redo? (atom true)]
+        (while @redo?
+          (reset! redo? false)
+          (try
+            (reset! result (interpret-expression ast body variables))
+            (catch clojure.lang.ExceptionInfo e
+              (let [{:keys [type]} (ex-data e)]
+                (case type
+                  :break (reset! running? false)
+                  :continue nil
+                  :redo (reset! redo? true)
+                  (throw e))))))))
     @result))
 
 (defn interpret-assignment-to-expression
@@ -1967,21 +1981,23 @@
         (loop [items items-to-iterate]
         (when (and (seq items) (not @should-break))
           (let [item (first items)]
-            (try
-              ;; Set the loop variables - either destructuring or target expression
-              (if variables-list
-                ;; Use destructuring assignment for variable lists
-                (assign-destructured-variables variables variables-list item)
-                ;; Use expression assignment for target expressions (e.g., arr[1])
-                (when target-expression
-                  (interpret-assignment-to-expression ast target-expression item variables)))
-              (reset! result (interpret-expression ast body variables))
-              (catch clojure.lang.ExceptionInfo e
-                (let [{:keys [type]} (ex-data e)]
-                  (case type
-                    :break (reset! should-break true)  ; Exit the loop entirely
-                    :continue nil   ; Continue to next iteration
-                    (throw e)))))
+            ;; Set the loop variables - either destructuring or target expression
+            (if variables-list
+              (assign-destructured-variables variables variables-list item)
+              (when target-expression
+                (interpret-assignment-to-expression ast target-expression item variables)))
+            (let [redo? (atom true)]
+              (while @redo?
+                (reset! redo? false)
+                (try
+                  (reset! result (interpret-expression ast body variables))
+                  (catch clojure.lang.ExceptionInfo e
+                    (let [{:keys [type]} (ex-data e)]
+                      (case type
+                        :break (reset! should-break true)
+                        :continue nil
+                        :redo (reset! redo? true)
+                        (throw e)))))))
             (when (not @should-break)
               (recur (rest items))))))))
     @result))
@@ -1993,32 +2009,47 @@
         result (atom nil)
         running? (atom true)]
     (while (and @running? (not (interpret-expression ast condition variables)))
-      (try
-        (reset! result (interpret-expression ast body variables))
-        (catch clojure.lang.ExceptionInfo e
-          (let [{:keys [type]} (ex-data e)]
-            (case type
-              :break (reset! running? false)
-              :continue nil  ; Just continue to next iteration
-              (throw e))))))
+      (let [redo? (atom true)]
+        (while @redo?
+          (reset! redo? false)
+          (try
+            (reset! result (interpret-expression ast body variables))
+            (catch clojure.lang.ExceptionInfo e
+              (let [{:keys [type]} (ex-data e)]
+                (case type
+                  :break (reset! running? false)
+                  :continue nil
+                  :redo (reset! redo? true)
+                  (throw e))))))))
     @result))
 
 (defn interpret-loop-statement
-  "Interpret infinite loop with break/continue support."
+  "Interpret infinite loop with break/continue support.
+   Creates a child scope so new variables don't leak to the outer scope,
+   but pre-existing outer variables remain accessible and modifiable."
   [ast entity-id variables]
   (let [body (parser/get-component ast entity-id :body)
         result (atom nil)
-        running? (atom true)]
+        running? (atom true)
+        outer-var-names (set (keys @variables))
+        loop-vars (atom @variables)
+        propagate-vars! (fn []
+                          (doseq [k outer-var-names]
+                            (when (contains? @loop-vars k)
+                              (swap! variables assoc k (get @loop-vars k)))))]
     (while @running?
       (try
-        (reset! result (interpret-expression ast body variables))
+        (reset! result (interpret-expression ast body loop-vars))
+        (propagate-vars!)
         (catch clojure.lang.ExceptionInfo e
           (let [{:keys [type value]} (ex-data e)]
             (case type
               :break (do
                        (reset! running? false)
-                       (reset! result value))
-              :continue nil  ; Just continue to next iteration
+                       (reset! result value)
+                       (propagate-vars!))
+              :continue (propagate-vars!)
+              :redo nil  ; Just restart the current iteration
               (throw e))))))
     @result))
 
@@ -2084,6 +2115,11 @@
   "Interpret a next statement (Ruby's continue) - throws a control flow exception."
   [ast entity-id variables]
   (throw (ex-info "next" {:type :continue})))
+
+(defn interpret-redo-statement
+  "Interpret a redo statement - throws a control flow exception to restart the current iteration."
+  [ast entity-id variables]
+  (throw (ex-info "redo" {:type :redo})))
 
 (defn interpret-return-statement
   "Interpret a return statement - throws a control flow exception with the return value."
@@ -2489,17 +2525,24 @@
      :closure @variables}))
 
 (defn call-lambda
-  "Execute a lambda with given arguments."
+  "Execute a lambda with given arguments. Lambdas enforce strict arity."
   [lambda args]
   (let [{:keys [params body ast closure]} lambda
-        ;; Create new variable scope with closure and bound parameters
-        lambda-vars (atom closure)]
-    ;; Bind parameters to arguments
-    (doseq [[param arg] (map vector params args)]
-      (swap! lambda-vars assoc param arg))
-    ;; Execute body statements
-    (let [results (mapv #(interpret-expression ast % lambda-vars) body)]
-      (last results))))
+        expected (count params)
+        actual (count args)]
+    ;; Lambdas enforce strict argument count
+    (when (not= expected actual)
+      (let [exception (ruby-classes/create-argument-error
+                       (str "wrong number of arguments (given " actual ", expected " expected ")"))]
+        (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
+    ;; Create new variable scope with closure and bound parameters
+    (let [lambda-vars (atom closure)]
+      ;; Bind parameters to arguments
+      (doseq [[param arg] (map vector params args)]
+        (swap! lambda-vars assoc param arg))
+      ;; Execute body statements
+      (let [results (mapv #(interpret-expression ast % lambda-vars) body)]
+        (last results)))))
 
 (defn interpret-expression
   "Main expression interpreter dispatcher."
@@ -2557,6 +2600,7 @@
        :break-statement (interpret-break-statement ast entity-id variables)
        :continue-statement (interpret-continue-statement ast entity-id variables)
        :next-statement (interpret-next-statement ast entity-id variables)
+       :redo-statement (interpret-redo-statement ast entity-id variables)
        :return-statement (interpret-return-statement ast entity-id variables)
        :block (interpret-block ast entity-id variables)
        :lambda (interpret-lambda ast entity-id variables)
@@ -2625,6 +2669,7 @@
        :break-statement (interpret-break-statement ast entity-id variables)
        :continue-statement (interpret-continue-statement ast entity-id variables)
        :next-statement (interpret-next-statement ast entity-id variables)
+       :redo-statement (interpret-redo-statement ast entity-id variables)
        :return-statement (interpret-return-statement ast entity-id variables)
        :block (interpret-block ast entity-id variables)
        :lambda (interpret-lambda ast entity-id variables)

@@ -1863,6 +1863,15 @@
                                          :position {:line (:line next-token) :column (:column next-token)})]
       [(assoc state-after-next :ast new-ast) entity-id])))
 
+(defn parse-redo-statement
+  "Parse a redo statement."
+  [state]
+  (when (match-token? state :keyword "redo")
+    (let [[redo-token state-after-redo] (consume-token state)
+          [new-ast entity-id] (create-node (:ast state-after-redo) :redo-statement
+                                         :position {:line (:line redo-token) :column (:column redo-token)})]
+      [(assoc state-after-redo :ast new-ast) entity-id])))
+
 (defn parse-loop-statement
   "Parse a loop do...end infinite loop statement."
   [state]
@@ -2139,8 +2148,10 @@
   (when-let [result (or (parse-module-definition state)
                         (parse-class-definition state)
                         (parse-method-definition state)
-                        ;; parse-if-statement is handled via parse-expression -> parse-primary -> parse-atomic
+                        ;; parse-if-statement and parse-loop-statement are handled via
+                        ;; parse-expression -> parse-primary -> parse-atomic
                         ;; to allow method chaining like: if true; 123; end.should
+                        ;; and: loop do; break 123; end.should == 123
                         (parse-while-statement state)
                         (parse-begin-statement state)
                         (parse-for-statement state)
@@ -2150,7 +2161,7 @@
                         (parse-break-statement state)
                         (parse-continue-statement state)
                         (parse-next-statement state)
-                        (parse-loop-statement state)
+                        (parse-redo-statement state)
                         (parse-instance-variable-assignment state)
                         (parse-global-variable-assignment state)
                         (parse-class-variable-assignment state)

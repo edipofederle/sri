@@ -102,7 +102,12 @@
   (register-method "Range" :inspect #(inspect %))
   (register-method "Range" :== #(ruby-eq %1 %2))
   (register-method "Range" :!= #(not (ruby-eq %1 %2)))
-  (register-method "Range" :equal? #(identical? %1 %2))
+  (register-method "Range" :equal? 
+    (fn [range1 range2]
+      (and (instance? RubyRange range2)
+           (= (:start range1) (:start range2))
+           (= (:end range1) (:end range2))
+           (= (:inclusive? range1) (:inclusive? range2)))))
   (register-method "Range" :object_id #(System/identityHashCode %))
   (register-method "Range" :class #(ruby-class %))
   (register-method "Range" :nil? #(false)) ; Ranges are never nil

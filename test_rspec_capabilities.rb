@@ -322,6 +322,13 @@ class ShouldExpectation
     end
     true
   end
+
+  def equal?(expected)
+    if !@actual.equal?(expected)
+      raise("expected #{expected.inspect} but got #{@actual.inspect}")
+    end
+    true
+  end
 end
 
 class ShouldNotExpectation
