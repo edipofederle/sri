@@ -934,50 +934,51 @@
     :else ::method-not-found))
 
 (defn try-instance-method-call
-  "Try to execute an instance method call, return ::method-not-found if method not found."
-  [receiver method-name args variables ast]
-  (if (and (map? receiver) (:class receiver) (:class-info receiver))
-    (let [instance receiver
-          class-info (:class-info instance)
-          class-methods @(:methods class-info)]
-      (if-let [method-info (get class-methods method-name)]
-        (let [method-params (:params method-info)
-              method-body (:body method-info)
-              method-ast (:ast method-info)
-              ;; Create instance method scope with self and parameters
-              base-vars (atom (assoc @variables "self" instance))
-              ;; Use bind-method-parameters to properly handle all param types
-              method-vars (bind-method-parameters base-vars method-params args method-ast)]
+  "Try to execute an instance method call, return ::method-not-found if method not found.
+   explicit-receiver? indicates the call has an explicit receiver (e.g., obj.method vs bare method)."
+  ([receiver method-name args variables ast]
+   (try-instance-method-call receiver method-name args variables ast true))
+  ([receiver method-name args variables ast explicit-receiver?]
+   (if (and (map? receiver) (:class receiver) (:class-info receiver))
+     (let [instance receiver
+           class-info (:class-info instance)
+           class-methods @(:methods class-info)]
+       (if-let [method-info (get class-methods method-name)]
+         (do
+           ;; Enforce private visibility: private methods cannot be called with explicit receiver
+           (when (and explicit-receiver? (= :private (:visibility method-info)))
+             (let [exception (ruby-classes/create-no-method-error
+                              (str "private method '" method-name "' called for an instance of " (:name class-info)))]
+               (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
+           (let [method-params (:params method-info)
+                 method-body (:body method-info)
+                 method-ast (:ast method-info)
+                 base-vars (atom (assoc @variables "self" instance))
+                 method-vars (bind-method-parameters base-vars method-params args method-ast)]
+             (let [result (cond
+                            (:attr-getter method-info)
+                            (let [attr-var-name (str "@" (:attr-name method-info))]
+                              (get @(:instance-variables instance) attr-var-name))
 
-          ;; Execute method body with return handling, or handle special generated methods
-          (let [result (cond
-                        ;; Handle attr getter methods
-                        (:attr-getter method-info)
-                        (let [attr-var-name (str "@" (:attr-name method-info))]
-                          (get @(:instance-variables instance) attr-var-name))
+                            (:attr-setter method-info)
+                            (let [attr-var-name (str "@" (:attr-name method-info))
+                                  value (first args)]
+                              (swap! (:instance-variables instance) assoc attr-var-name value)
+                              value)
 
-                        ;; Handle attr setter methods
-                        (:attr-setter method-info)
-                        (let [attr-var-name (str "@" (:attr-name method-info))
-                              value (first args)]
-                          (swap! (:instance-variables instance) assoc attr-var-name value)
-                          value)
+                            method-body
+                            (try
+                              (interpret-expression method-ast method-body method-vars)
+                              (catch clojure.lang.ExceptionInfo e
+                                (let [{:keys [type value]} (ex-data e)]
+                                  (if (= type :return)
+                                    value
+                                    (throw e)))))
 
-                        ;; Handle normal method body
-                        method-body
-                        (try
-                          (interpret-expression method-ast method-body method-vars)
-                          (catch clojure.lang.ExceptionInfo e
-                            (let [{:keys [type value]} (ex-data e)]
-                              (if (= type :return)
-                                value
-                                (throw e)))))
-
-                        ;; No method body
-                        :else nil)]
-            result))
-        ::method-not-found))
-    ::method-not-found))
+                            :else nil)]
+               result)))
+         ::method-not-found))
+     ::method-not-found)))
 
 (defn try-block-method
   "Try to execute a block-based method like each, map, select, etc using Enumerable."
@@ -1589,7 +1590,7 @@
                           (:class-info self-obj)
                           (contains? @(:methods (:class-info self-obj)) method-name))))
             (let [self-obj (get @variables "self")
-                  result (try-instance-method-call self-obj method-name args variables ast)]
+                  result (try-instance-method-call self-obj method-name args variables ast false)]
               (if (= result ::method-not-found)
                 (let [exception (ruby-classes/create-no-method-error
                                  (str "undefined method `" method-name "`"))]
@@ -1661,7 +1662,7 @@
                   (:class-info self-obj)
                   (contains? @(:methods (:class-info self-obj)) var-name))))
       (let [self-obj (get @variables "self")
-            result (try-instance-method-call self-obj var-name [] variables ast)]
+            result (try-instance-method-call self-obj var-name [] variables ast false)]
         (if (= result ::method-not-found)
           (let [exception (ruby-classes/create-name-error
                            (str "undefined local variable or method `" var-name "`"))]
@@ -2148,6 +2149,25 @@
            module-key module-info
            simple-name module-info)))
 
+(defn- visibility-directive?
+  "If method-id is a bare visibility directive (private/public), update current-visibility and return true.
+   Handles both identifier form (bare `private`) and zero-arg method-call form (`private()`)."
+  [ast method-id method-type current-visibility]
+  (let [kw (cond
+              (and (= method-type :identifier)
+                   (#{"private" "public"} (parser/get-component ast method-id :value)))
+              (parser/get-component ast method-id :value)
+
+              (and (= method-type :method-call)
+                   (empty? (parser/get-component ast method-id :arguments))
+                   (#{"private" "public"} (parser/get-component ast method-id :method)))
+              (parser/get-component ast method-id :method)
+
+              :else nil)]
+    (when kw
+      (reset! current-visibility (keyword kw))
+      true)))
+
 (defn interpret-module-definition
   "Interpret a module definition - stores module info in variables for later use."
   [ast entity-id variables]
@@ -2185,7 +2205,8 @@
 
       ;; Process module body to extract method definitions
       (when body-id
-        (let [method-statements (parser/get-children ast body-id)]
+        (let [method-statements (parser/get-children ast body-id)
+              current-visibility (atom :public)]
           (doseq [method-id method-statements]
             (let [method-type (parser/get-node-type ast method-id)]
               (cond
@@ -2199,6 +2220,7 @@
                           :params method-params
                           :body method-body
                           :module qualified-name
+                          :visibility @current-visibility
                           :ast ast}))
 
                 ;; Module class methods (def self.method_name)
@@ -2212,6 +2234,9 @@
                           :body method-body
                           :module qualified-name
                           :ast ast}))
+
+                (visibility-directive? ast method-id method-type current-visibility)
+                nil  ; side effect already applied
 
                 ;; Nested module definitions
                 (= method-type :module-definition)
@@ -2237,15 +2262,18 @@
 
 (defn add-method-to-class
   "Helper to add a method definition to a class methods atom."
-  [methods-atom ast method-id]
-  (let [method-name (parser/get-component ast method-id :name)
-        method-params (parser/get-component ast method-id :parameters)
-        method-body (parser/get-component ast method-id :body)]
-    (swap! methods-atom assoc method-name
-           {:name method-name
-            :params method-params
-            :body method-body
-            :ast ast})))
+  ([methods-atom ast method-id]
+   (add-method-to-class methods-atom ast method-id :public))
+  ([methods-atom ast method-id visibility]
+   (let [method-name (parser/get-component ast method-id :name)
+         method-params (parser/get-component ast method-id :parameters)
+         method-body (parser/get-component ast method-id :body)]
+     (swap! methods-atom assoc method-name
+            {:name method-name
+             :params method-params
+             :body method-body
+             :ast ast
+             :visibility visibility}))))
 
 (defn add-attr-getter
   "Helper to add an attribute getter method."
@@ -2275,6 +2303,112 @@
       (when (#{:attr-accessor-statement :attr-writer-statement} method-type)
         (add-attr-setter methods-atom attr-name)))))
 
+(defn- process-singleton-class-body!
+  "Process a singleton class (class << self) body, adding methods as class methods."
+  [ast body-id class-class-methods variables]
+  (let [method-statements (parser/get-children ast body-id)
+        current-visibility (atom :public)]
+    (doseq [method-id method-statements]
+      (let [method-type (parser/get-node-type ast method-id)]
+        (cond
+          (= method-type :method-definition)
+          (add-method-to-class class-class-methods ast method-id @current-visibility)
+
+          (visibility-directive? ast method-id method-type current-visibility)
+          nil  ; side effect already applied
+
+          :else nil)))))
+
+(defn- process-class-body!
+  "Process class body statements, tracking visibility and handling include/private directives.
+   Returns nil. Mutates class-methods, class-class-methods, class-variables atoms."
+  [ast body-id class-name class-methods class-class-methods class-variables variables module-context]
+  (let [method-statements (parser/get-children ast body-id)
+        current-visibility (atom :public)]
+    (doseq [method-id method-statements]
+      (let [method-type (parser/get-node-type ast method-id)]
+        (cond
+          (= method-type :method-definition)
+          (add-method-to-class class-methods ast method-id @current-visibility)
+
+          (= method-type :class-method-definition)
+          (add-method-to-class class-class-methods ast method-id)
+
+          (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
+          (process-attr-statement method-type class-methods ast method-id)
+
+          ;; Class variable assignments
+          (= method-type :class-variable-assignment)
+          (let [var-name (parser/get-component ast method-id :variable)
+                value-id (parser/get-component ast method-id :value)
+                value (interpret-expression ast value-id variables)]
+            (swap! class-variables assoc var-name value))
+
+          ;; Singleton class: class << self
+          (= method-type :singleton-class)
+          (let [sc-body-id (parser/get-component ast method-id :body)]
+            (process-singleton-class-body! ast sc-body-id class-class-methods variables))
+
+          ;; Nested class definition
+          (= method-type :class-definition)
+          (let [nested-name (parser/get-component ast method-id :name)
+                qualified-nested-name (if class-name
+                                        (str class-name "::" nested-name)
+                                        nested-name)
+                updated-ast (assoc-in ast [:components :name method-id] qualified-nested-name)
+                ;; Save and restore class context
+                saved-class (get @variables "__current_class__")]
+            (interpret-class-definition-with-context updated-ast method-id variables module-context)
+            ;; Restore class context after nested class processing
+            (if saved-class
+              (swap! variables assoc "__current_class__" saved-class)
+              (swap! variables dissoc "__current_class__")))
+
+          (visibility-directive? ast method-id method-type current-visibility)
+          nil  ; side effect already applied
+
+          ;; private :method_name - mark existing method as private
+          (and (= method-type :method-call)
+               (= (parser/get-component ast method-id :method) "private")
+               (seq (parser/get-component ast method-id :arguments)))
+          (let [args (parser/get-component ast method-id :arguments)]
+            (doseq [arg-id args]
+              (let [arg-type (parser/get-node-type ast arg-id)
+                    method-name (cond
+                                  (= arg-type :symbol-literal)
+                                  (parser/get-component ast arg-id :value)
+                                  (= arg-type :identifier)
+                                  (parser/get-component ast arg-id :value)
+                                  :else nil)]
+                (when (and method-name (contains? @class-methods method-name))
+                  (swap! class-methods update method-name assoc :visibility :private)))))
+
+          ;; include ModuleName
+          (and (= method-type :method-call)
+               (= (parser/get-component ast method-id :method) "include")
+               (seq (parser/get-component ast method-id :arguments)))
+          (let [args (parser/get-component ast method-id :arguments)
+                module-arg-id (first args)
+                module-arg-type (parser/get-node-type ast module-arg-id)
+                module-name (when (= module-arg-type :identifier)
+                              (parser/get-component ast module-arg-id :value))
+                ;; Try to find module - check qualified name first, then simple name
+                qualified-module-name (when (and module-name module-context)
+                                        (str module-context "::" module-name))
+                module-info (or (when qualified-module-name
+                                  (or (get @variables (str "module:" qualified-module-name))
+                                      (get @variables qualified-module-name)))
+                                (when module-name
+                                  (or (get @variables (str "module:" module-name))
+                                      (get @variables module-name))))]
+            (when (and module-info (:methods module-info))
+              (let [module-methods (if (instance? clojure.lang.Atom (:methods module-info))
+                                     @(:methods module-info)
+                                     (:methods module-info))]
+                (swap! class-methods merge module-methods))))
+
+          :else nil)))))
+
 (defn interpret-class-definition
   "Interpret a class definition - stores class info in variables for later instantiation."
   ([ast entity-id variables]
@@ -2284,59 +2418,32 @@
          parent-class (parser/get-component ast entity-id :parent-class)
          body-id (parser/get-component ast entity-id :body)
          existing-class (get @variables class-name)
-           class-methods (if existing-class
-                          (:methods existing-class)
-                          (atom {}))
-           class-class-methods (if existing-class
-                                (:class-methods existing-class)
-                                (atom {}))
-           class-variables (if existing-class
-                            (:class-variables existing-class)
-                            (atom {}))
-           class-info (if existing-class
-                       (assoc existing-class
-                              :ast ast
-                              :body-id body-id)
-                       {:name class-name
-                        :parent-class parent-class
-                        :methods class-methods
-                        :class-methods class-class-methods
-                        :class-variables class-variables
-                        :ast ast
-                        :body-id body-id})]
-     ;; Check if class already exists (for open classes / class reopening)
+         class-methods (if existing-class
+                         (:methods existing-class)
+                         (atom {}))
+         class-class-methods (if existing-class
+                               (:class-methods existing-class)
+                               (atom {}))
+         class-variables (if existing-class
+                           (:class-variables existing-class)
+                           (atom {}))
+         class-info (if existing-class
+                      (assoc existing-class
+                             :ast ast
+                             :body-id body-id)
+                      {:name class-name
+                       :parent-class parent-class
+                       :methods class-methods
+                       :class-methods class-class-methods
+                       :class-variables class-variables
+                       :ast ast
+                       :body-id body-id})]
      (when body-id
-       ;; Set current class context for class variable access
        (swap! variables assoc "__current_class__" class-info)
-       (let [method-statements (parser/get-children ast body-id)]
-         (doseq [method-id method-statements]
-           (let [method-type (parser/get-node-type ast method-id)]
-             (cond
-               (= method-type :method-definition)
-               (add-method-to-class class-methods ast method-id)
-
-               (= method-type :class-method-definition)
-               (add-method-to-class class-class-methods ast method-id)
-
-               (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
-               (process-attr-statement method-type class-methods ast method-id)
-
-               ;; Handle class variable assignments
-               (= method-type :class-variable-assignment)
-               (let [var-name (parser/get-component ast method-id :variable)
-                     value-id (parser/get-component ast method-id :value)
-                     value (interpret-expression ast value-id variables)]
-                 (swap! class-variables assoc var-name value))
-
-               ;; Skip any other statements during class definition
-               :else nil))))
-       ;; Clear current class context
+       (process-class-body! ast body-id class-name class-methods class-class-methods class-variables variables nil)
        (swap! variables dissoc "__current_class__"))
 
-     ;; Store class in variables with "class:" prefix
      (swap! variables assoc (str "class:" class-name) class-info)
-
-     ;; Also make class name available for Class.new syntax
      (swap! variables assoc class-name class-info)
 
      nil)))
@@ -2346,13 +2453,16 @@
    The class is stored with its qualified name (e.g., MyModule::MyClass)."
   [ast entity-id variables module-context]
   (let [class-name (parser/get-component ast entity-id :name)
-        qualified-class-name (if module-context
-                              (str module-context "::" class-name)
-                              class-name)
+        ;; If class-name is already qualified (set by process-class-body! for nested classes),
+        ;; use it directly; otherwise prepend the module context
+        qualified-class-name (if (and module-context
+                                      (not (clojure.string/includes? class-name "::")))
+                               (str module-context "::" class-name)
+                               class-name)
         parent-class (parser/get-component ast entity-id :parent-class)
         body-id (parser/get-component ast entity-id :body)
         existing-class (or (get @variables qualified-class-name)
-                          (get @variables (str "class:" qualified-class-name)))
+                           (get @variables (str "class:" qualified-class-name)))
         class-methods (if existing-class
                         (:methods existing-class)
                         (atom {}))
@@ -2373,36 +2483,11 @@
                       :class-variables class-variables
                       :ast ast
                       :body-id body-id})]
-    ;; Process class body
     (when body-id
-      ;; Set current class context for class variable access
       (swap! variables assoc "__current_class__" class-info)
-      (let [method-statements (parser/get-children ast body-id)]
-        (doseq [method-id method-statements]
-          (let [method-type (parser/get-node-type ast method-id)]
-            (cond
-              (= method-type :method-definition)
-              (add-method-to-class class-methods ast method-id)
-
-              (= method-type :class-method-definition)
-              (add-method-to-class class-class-methods ast method-id)
-
-              (#{:attr-accessor-statement :attr-reader-statement :attr-writer-statement} method-type)
-              (process-attr-statement method-type class-methods ast method-id)
-
-              ;; Handle class variable assignments
-              (= method-type :class-variable-assignment)
-              (let [var-name (parser/get-component ast method-id :variable)
-                    value-id (parser/get-component ast method-id :value)
-                    value (interpret-expression ast value-id variables)]
-                (swap! class-variables assoc var-name value))
-
-              ;; Skip any other statements during class definition
-              :else nil))))
-      ;; Clear current class context
+      (process-class-body! ast body-id qualified-class-name class-methods class-class-methods class-variables variables module-context)
       (swap! variables dissoc "__current_class__"))
 
-    ;; Store class with qualified name
     (swap! variables assoc (str "class:" qualified-class-name) class-info)
     (swap! variables assoc qualified-class-name class-info)
 

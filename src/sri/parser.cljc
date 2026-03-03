@@ -1781,29 +1781,43 @@
           [(assoc final-state :ast new-ast) entity-id])))))
 
 (defn parse-class-definition
-  "Parse a class definition (class ClassName < ParentClass ... end)."
+  "Parse a class definition (class ClassName < ParentClass ... end)
+   or a singleton class definition (class << self ... end)."
   [state]
   (when (match-token? state :keyword "class")
-    (let [[_ state-after-class] (consume-token state)
-          [class-token state-after-name] (expect-token state-after-class :identifier)
+    (let [class-start-token (current-token state)
+          [_ state-after-class] (consume-token state)]
+      (if (match-token? state-after-class :operator "<<")
+        ;; Singleton class: class << self ... end
+        (let [[_ state-after-shift] (consume-token state-after-class)
+              [_ state-after-self] (expect-token state-after-shift :keyword "self")
+              state-skip-newlines (skip-separators state-after-self)
+              [state-after-body body-id] (parse-class-block state-skip-newlines)
+              [_ final-state] (expect-token state-after-body :keyword "end")
+              [new-ast entity-id] (create-node (:ast final-state) :singleton-class
+                                               :body body-id
+                                               :position {:line (:line class-start-token) :column (:column class-start-token)})]
+          [(assoc final-state :ast new-ast) entity-id])
+        ;; Normal class definition
+        (let [[class-token state-after-name] (expect-token state-after-class :identifier)
 
-          ;; Check for inheritance (< ParentClass)
-          [state-after-inheritance parent-class]
-          (if (match-token? state-after-name :operator "<")
-            (let [[_ state-after-lt] (consume-token state-after-name)
-                  [parent-token state-after-parent] (expect-token state-after-lt :identifier)]
-              [state-after-parent (:value parent-token)])
-            [state-after-name nil])
+              ;; Check for inheritance (< ParentClass)
+              [state-after-inheritance parent-class]
+              (if (match-token? state-after-name :operator "<")
+                (let [[_ state-after-lt] (consume-token state-after-name)
+                      [parent-token state-after-parent] (expect-token state-after-lt :identifier)]
+                  [state-after-parent (:value parent-token)])
+                [state-after-name nil])
 
-          state-skip-newlines (skip-separators state-after-inheritance)
-          [state-after-body body-id] (parse-class-block state-skip-newlines)
-          [_ final-state] (expect-token state-after-body :keyword "end")
-          [new-ast entity-id] (create-node (:ast final-state) :class-definition
-                                         :name (:value class-token)
-                                         :parent-class parent-class
-                                         :body body-id
-                                         :position {:line (:line class-token) :column (:column class-token)})]
-      [(assoc final-state :ast new-ast) entity-id])))
+              state-skip-newlines (skip-separators state-after-inheritance)
+              [state-after-body body-id] (parse-class-block state-skip-newlines)
+              [_ final-state] (expect-token state-after-body :keyword "end")
+              [new-ast entity-id] (create-node (:ast final-state) :class-definition
+                                               :name (:value class-token)
+                                               :parent-class parent-class
+                                               :body body-id
+                                               :position {:line (:line class-token) :column (:column class-token)})]
+          [(assoc final-state :ast new-ast) entity-id])))))
 
 (defn parse-return-statement
   "Parse a return statement (return [expression])."
