@@ -292,6 +292,29 @@ def respond_to(method_name)
   RespondToMatcher.new(method_name)
 end
 
+# include matcher
+class IncludeMatcher
+  def initialize(expected)
+    @expected = expected
+  end
+
+  def matches?(actual)
+    actual.include?(@expected)
+  end
+
+  def failure_message(actual)
+    "expected #{actual.inspect} to include #{@expected.inspect}"
+  end
+
+  def negative_failure_message(actual)
+    "expected #{actual.inspect} not to include #{@expected.inspect}"
+  end
+end
+
+def include(expected)
+  IncludeMatcher.new(expected)
+end
+
 # --------------------------
 # Example usage
 # --------------------------

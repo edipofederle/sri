@@ -910,15 +910,20 @@
                           @(:class-methods receiver)  ; User-defined class (atom)
                           (:class-methods receiver))] ; Built-in class (regular map)
       (if-let [method-info (get class-methods method-name)]
-        (cond
-          (:builtin-class-method method-info)
-          (handle-builtin-class-method method-name args)
+        (do
+          (when (= :private (:visibility method-info))
+            (let [exception (ruby-classes/create-no-method-error
+                             (str "private method '" method-name "' called for " (:name receiver) ":Class"))]
+              (throw (ex-info "ruby-exception" {:type :ruby-exception :exception exception}))))
+          (cond
+            (:builtin-class-method method-info)
+            (handle-builtin-class-method method-name args)
 
-          (:ruby-class-method method-info)
-          (handle-ruby-class-method (:name receiver) method-name args)
+            (:ruby-class-method method-info)
+            (handle-ruby-class-method (:name receiver) method-name args)
 
-          :else
-          (handle-user-defined-class-method method-info args variables ast))
+            :else
+            (handle-user-defined-class-method method-info args variables ast)))
         ::method-not-found))
 
     ;; Handle modules with methods (def self.method_name goes in :methods for modules)
@@ -1219,6 +1224,9 @@
              (map? receiver) (contains? receiver (first args))
              :else ::method-not-found)
     "include?" (cond
+                 (ruby-classes/ruby-array? receiver)
+                 (let [item (first args)]
+                   (boolean (some #(= % item) @(:data receiver))))
                  (ruby-classes/ruby-range? receiver)
                  (ruby-classes/invoke-ruby-method receiver :include? (first args))
                  (ruby-classes/ruby-hash? receiver) (contains? @(:data receiver) (first args))
@@ -1262,6 +1270,14 @@
     "count" (if (ruby-classes/ruby-range? receiver)
               (ruby-classes/invoke-ruby-method receiver :count)
               ::method-not-found)
+    ;; .methods on user-defined class instances: returns public method names as symbols
+    "methods" (if (and (map? receiver) (:class receiver) (:class-info receiver))
+                (let [class-methods @(:methods (:class-info receiver))
+                      public-syms (mapv (fn [[name _]] (ruby-symbol/create-symbol name))
+                                        (filter (fn [[_ info]] (not= :private (:visibility info)))
+                                                class-methods))]
+                  (apply ruby-classes/create-array public-syms))
+                ::method-not-found)
     ;; Default case
     ::method-not-found))
 
