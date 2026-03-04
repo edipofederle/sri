@@ -145,12 +145,46 @@ Note: Only a VERY small subset of specs currently pass (for example `numbers_spe
 ## Development
 
 ### Project Structure
-- `src/sri/core.clj` - Main entry point
-- `src/sri/tokenizer.cljc` - Lexical analyzer
-- `src/sri/parser.cljc` - AST parser
-- `src/sri/interpreter.cljc` - AST interpreter
-- `src/java/sri/Sri.java` - Java API wrapper
-- `examples/` - Ruby test programs
+
+#### Interpreter pipeline
+- `src/sri/core.clj` — Main entry point; `eval-string` public API
+- `src/sri/tokenizer.cljc` — Lexical analyzer
+- `src/sri/parser.cljc` — ECS-based flat AST parser
+- `src/sri/interpreter.cljc` — Direct AST interpreter
+
+#### Ruby object system
+- `src/sri/ruby_protocols.cljc` — Core protocols: `RubyObject`, `RubyInspectable`, `RubyComparable`
+- `src/sri/ruby_method_registry.cljc` — Centralized method lookup registry
+- `src/sri/ruby_basic_object.cljc` — `BasicObject` base
+- `src/sri/ruby_object.cljc` — `Object` (includes Kernel)
+- `src/sri/ruby_kernel.cljc` — Kernel module (`puts`, `print`, `p`, etc.)
+- `src/sri/ruby_classes_new.cljc` — Class/instance creation helpers
+- `src/sri/enumerable.cljc` — Enumerable module shared by Array and Range
+- `src/sri/ruby_string.cljc` — String class
+- `src/sri/ruby_array.cljc` — Array class
+- `src/sri/ruby_hash.cljc` — Hash class
+- `src/sri/ruby_numeric.cljc` — Numeric / Integer / Float
+- `src/sri/ruby_range.cljc` — Range class
+- `src/sri/ruby_symbol.cljc` — Symbol class
+- `src/sri/ruby_nil_class.cljc` — NilClass
+- `src/sri/ruby_true_class.cljc` — TrueClass
+- `src/sri/ruby_false_class.cljc` — FalseClass
+- `src/sri/ruby_exception.cljc` — Exception hierarchy
+- `src/sri/ruby_rational.cljc` — Rational class
+- `src/sri/ruby_complex.cljc` — Complex class
+
+#### Java integration
+- `src/java/sri/Sri.java` — Java API wrapper for embedding
+
+#### Tests & specs
+- `test/sri/` — Clojure unit tests
+- `spec/` — Forked Ruby Spec Suite (git submodule)
+- `ruby-specs-to-run.edn` — Specs enabled for CI
+- `test_rspec_capabilities.rb` — Custom RSpec-like test runner
+
+#### Documentation & examples
+- `doc/` — Design docs and notes
+- `examples/` — Ruby programs demonstrating interpreter features
 
 ## License
 
