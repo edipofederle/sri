@@ -12,5 +12,5 @@
  {:path "spec/language/symbol_spec.rb"}
  {:path "spec/language/loop_spec.rb"}
  {:path "spec/language/proc_spec.rb"}
-  {:path "spec/language/private_spec.rb"}
+ {:path "spec/language/private_spec.rb"}
  ]
